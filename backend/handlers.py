@@ -2910,8 +2910,12 @@ logs/
                     )
                 log(f"✅ .dockerignore 已创建\n")
 
+            # 推送路径控制：默认允许后置全局推送；在多服务独立推送模式下会关闭
+            service_level_push_completed = False
+            is_multi_services_build = bool(selected_services and len(selected_services) > 1)
+
             # 多服务构建逻辑（只有当服务数量大于1时才进入多服务构建）
-            if selected_services and len(selected_services) > 1:
+            if is_multi_services_build:
                 log(f"🔨 开始多服务构建，共 {len(selected_services)} 个服务\n")
                 log(f"📋 选中的服务: {', '.join(selected_services)}\n")
                 log(f"📦 推送模式: {push_mode}\n")
@@ -3176,6 +3180,7 @@ logs/
 
                         if should_push_service:
                             log(f"📡 开始推送服务镜像: {service_tag}\n")
+                            log(f"[{service_name}] 🧭 推送路径: service\n")
                             try:
                                 # 初始化 registry_config
                                 registry_config = None
@@ -3464,6 +3469,9 @@ logs/
                 log(f"\n{'='*60}\n")
                 log(f"✅ 所有服务构建完成，共构建 {len(built_services)} 个服务\n")
                 log(f"📋 已构建的服务: {', '.join(built_services)}\n")
+                if push_mode != "single":
+                    # 多服务独立推送已在服务循环中处理，避免再次触发全局推送
+                    service_level_push_completed = True
 
             else:
                 # 单服务构建（原有逻辑）
@@ -3522,20 +3530,20 @@ logs/
                 log(f"✅ 镜像构建完成: {full_tag}\n")
 
             # 如果需要推送，直接使用构建好的镜像名推送，从激活的registry获取认证信息
-            if should_push:
+            if should_push and not service_level_push_completed:
                 log(f"📡 开始推送镜像...\n")
+                log(f"🧭 推送路径: global\n")
                 # 直接使用构建时的镜像名和标签进行推送
                 # full_tag 格式: image_name:tag，可能包含registry路径
                 # 例如: registry.cn-shanghai.aliyuncs.com/51jbm/app2docker:dev
-                push_repository = image_name  # 直接使用构建时的镜像名
-                push_tag = tag
+                global_push_repository = image_name  # 直接使用构建时的镜像名
+                global_push_tag = tag
                 # 强一致：优先按构建时 full_tag 反解 repository/tag，避免变量漂移导致推送错镜像
                 last_colon = full_tag.rfind(":")
                 last_slash = full_tag.rfind("/")
                 if last_colon > last_slash:
-                    push_repository = full_tag[:last_colon]
-                    push_tag = full_tag[last_colon + 1 :]
-                tag = push_tag
+                    global_push_repository = full_tag[:last_colon]
+                    global_push_tag = full_tag[last_colon + 1 :]
 
                 # 根据镜像名找到对应的registry配置
                 def find_matching_registry_for_push(image_name):
@@ -3563,7 +3571,7 @@ logs/
                     return None
 
                 # 尝试根据镜像名找到匹配的registry
-                registry_config = find_matching_registry_for_push(image_name)
+                registry_config = find_matching_registry_for_push(global_push_repository)
                 if not registry_config:
                     # 如果找不到匹配的，使用激活的registry
                     registry_config = get_active_registry()
@@ -3575,7 +3583,7 @@ logs/
                         f"🎯 找到匹配的registry配置: {registry_config.get('name', 'Unknown')}\n"
                     )
 
-                log(f"📦 推送镜像: {full_tag}\n")
+                log(f"📦 推送镜像: {global_push_repository}:{global_push_tag}\n")
 
                 # 从registry配置中获取认证信息
                 username = registry_config.get("username")
@@ -3672,7 +3680,9 @@ logs/
                 push_retried = False
                 try:
                     # 直接推送构建好的镜像
-                    log(f"🚀 开始推送，repository: {push_repository}, tag: {tag}\n")
+                    log(
+                        f"🚀 开始推送，repository: {global_push_repository}, tag: {global_push_tag}\n"
+                    )
                     if auth_config:
                         log(
                             f"🔐 使用认证信息: username={auth_config.get('username')}, serveraddress={auth_config.get('serveraddress', 'docker.io')}\n"
@@ -3680,7 +3690,7 @@ logs/
                     else:
                         log(f"⚠️  未使用认证信息\n")
                     push_stream = docker_builder.push_image(
-                        push_repository, tag, auth_config=auth_config
+                        global_push_repository, global_push_tag, auth_config=auth_config
                     )
                     for chunk in push_stream:
                         if isinstance(chunk, dict):
@@ -3706,8 +3716,8 @@ logs/
                                     log(f"🔄 检测到认证错误，尝试重新登录...\n")
                                     if _retry_login_and_push(
                                         docker_builder,
-                                        push_repository,
-                                        tag,
+                                        global_push_repository,
+                                        global_push_tag,
                                         auth_config,
                                         username,
                                         password,
@@ -3718,8 +3728,8 @@ logs/
                                         log(f"🔄 重新登录成功，重试推送...\n")
                                         push_retried = True
                                         push_stream = docker_builder.push_image(
-                                            push_repository,
-                                            tag,
+                                            global_push_repository,
+                                            global_push_tag,
                                             auth_config=auth_config,
                                         )
                                         for retry_chunk in push_stream:
@@ -3756,7 +3766,9 @@ logs/
                         else:
                             log(str(chunk))
 
-                    log(f"✅ 推送完成: {full_tag}\n")
+                    log(
+                        f"✅ 推送完成: {global_push_repository}:{global_push_tag}\n"
+                    )
                 except RuntimeError:
                     raise
                 except Exception as e:
@@ -3777,8 +3789,8 @@ logs/
                             log(f"🔄 检测到认证错误，尝试重新登录...\n")
                             if _retry_login_and_push(
                                 docker_builder,
-                                push_repository,
-                                tag,
+                                global_push_repository,
+                                global_push_tag,
                                 auth_config,
                                 username,
                                 password,
@@ -3789,7 +3801,9 @@ logs/
                                 log(f"🔄 重新登录成功，重试推送...\n")
                                 try:
                                     push_stream = docker_builder.push_image(
-                                        push_repository, tag, auth_config=auth_config
+                                        global_push_repository,
+                                        global_push_tag,
+                                        auth_config=auth_config,
                                     )
                                     for retry_chunk in push_stream:
                                         if isinstance(retry_chunk, dict):
@@ -3803,7 +3817,9 @@ logs/
                                                 raise RuntimeError(
                                                     f"推送失败（已重试）: {retry_error_msg}"
                                                 )
-                                    log(f"✅ 推送完成（重试成功）: {full_tag}\n")
+                                    log(
+                                        f"✅ 推送完成（重试成功）: {global_push_repository}:{global_push_tag}\n"
+                                    )
                                 except Exception as retry_error:
                                     raise RuntimeError(
                                         f"推送失败（已重试）: {str(retry_error)}"
@@ -3844,9 +3860,10 @@ logs/
                                 f"   5. 如果手动命令成功，说明配置有问题；如果也失败，说明认证信息不正确\n"
                             )
                             raise
-
-                    # 推送失败不影响构建成功，记录错误但继续完成任务
-                    log(f"⚠️ 推送失败，但构建已完成，任务将继续完成\n")
+            elif should_push and service_level_push_completed:
+                log(
+                    f"ℹ️  多服务模式已在服务级别完成推送，跳过全局推送\n"
+                )
 
             log(f"✅ 所有操作已完成\n")
             # 更新任务状态为完成（确保状态更新）
