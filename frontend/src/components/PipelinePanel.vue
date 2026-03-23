@@ -3795,7 +3795,7 @@ onMounted(() => {
         if (config.tag) formData.value.tag = config.tag;
         if (config.push_mode) formData.value.push_mode = config.push_mode;
         if (config.should_push !== undefined)
-          formData.value.should_push = config.should_push;
+          formData.value.push = config.should_push;
         if (config.selected_services)
           formData.value.selected_services = config.selected_services;
         if (config.service_push_config)

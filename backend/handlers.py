@@ -2450,6 +2450,25 @@ class BuildManager:
         resource_package_ids: list = None,  # 资源包ID列表
     ):
         """从 Git 源码构建任务"""
+        # 兼容场景：页面选择多阶段模式但仅选了一个服务时，实际会走单服务构建分支。
+        # 此时应优先使用该服务在 service_push_config 中的镜像名/标签，避免出现
+        # push 到 registry/namespace（缺少镜像名）导致本地 tag 不存在。
+        if (
+            push_mode == "multi"
+            and selected_services
+            and len(selected_services) == 1
+            and isinstance(service_push_config, dict)
+        ):
+            only_service = selected_services[0]
+            only_service_cfg = service_push_config.get(only_service, {})
+            if isinstance(only_service_cfg, dict):
+                service_image_name = (only_service_cfg.get("imageName") or "").strip()
+                service_tag = (only_service_cfg.get("tag") or "").strip()
+                if service_image_name:
+                    image_name = service_image_name
+                if service_tag:
+                    tag = service_tag
+
         full_tag = f"{image_name}:{tag}"
         # 使用 task_id 作为构建上下文目录名的一部分，避免冲突
         build_context = os.path.join(
