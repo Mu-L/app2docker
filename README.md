@@ -129,13 +129,37 @@ docker run -d \
 
 1. 进入部署管理或主机管理，新增目标主机
 2. 选择连接类型并填写信息：
-   - **Agent**：主机接入后等待在线状态
+   - **Agent**：先在平台生成连接密钥，再在目标主机部署 Agent 容器
    - **SSH**：填写地址、端口、账号和认证信息
    - **Portainer**：填写地址、访问令牌和目标环境
 3. 点击**测试连接**，确认目标可访问 Docker
 4. 连接成功后，检查主机能力信息（例如 Compose 模式支持情况）
 
 > 建议：生产环境优先使用稳定的长期连接方式，并为目标主机配置最小权限账号。
+
+#### Agent 的 Docker 部署方式
+
+1. 在平台的 Agent 主机管理中生成或选择一个连接密钥（用于 `AGENT_SECRET_KEY`）
+2. 在目标主机执行以下命令部署 Agent：
+
+```bash
+docker run -d \
+  --name app2docker-agent \
+  --restart=always \
+  -e AGENT_SECRET_KEY=<你的密钥> \
+  -e SERVER_URL=ws://<平台IP或域名>:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
+  registry.cn-shanghai.aliyuncs.com/51jbm/app2docker-agent:latest
+```
+
+3. 回到平台“待加入主机”或主机列表，确认 Agent 上线并完成接入
+
+说明：
+- `SERVER_URL` 建议使用可从目标主机访问的地址，容器内不要使用 `localhost`
+- 如果平台走 HTTPS/WSS，请改为 `wss://<域名>`
+- `docker.sock` 挂载后 Agent 才能在主机上执行 Docker 部署命令
 
 ### 3. 部署项目（一步步）
 
