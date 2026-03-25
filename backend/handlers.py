@@ -5732,57 +5732,138 @@ class BuildTaskManager:
             target_names: 要执行的目标名称列表
         """
         from backend.deploy_task_manager import DeployTaskManager
+        import time
 
         try:
-            # 获取任务信息
-            task = self.get_task(task_id)
-            if not task:
-                raise ValueError(f"部署任务不存在: {task_id}")
-
             # 从 Task 表获取配置（通过 deploy_config_id 关联）
+            # SQLite 在多线程下偶发「刚 commit 后另一连接立刻 SELECT 不到」的可见性延迟，
+            # 对新建的执行任务做短暂重试；配置必须在同一会话内读取，避免 ORM 分离后访问 task_config 失败。
             from backend.database import get_db_session
             from backend.models import Task, DeployConfig
 
-            db = get_db_session()
-            try:
-                task_obj = db.query(Task).filter(Task.task_id == task_id).first()
-                if not task_obj:
-                    raise ValueError(f"部署任务不存在: {task_id}")
+            config_content = None
+            config = {}
+            registry = None
+            tag = None
 
-                # 如果任务有 deploy_config_id，从 DeployConfig 表获取配置
-                if task_obj.deploy_config_id:
-                    deploy_config = db.query(DeployConfig).filter(DeployConfig.config_id == task_obj.deploy_config_id).first()
-                    if not deploy_config:
-                        raise ValueError(f"部署配置不存在: {task_obj.deploy_config_id}")
-                    
-                    # 先读取所有需要的属性值（避免延迟加载导致的会话分离问题）
-                    config_content = deploy_config.config_content or ""
-                    config = deploy_config.config_json or {}
-                    registry = deploy_config.registry
-                    tag = deploy_config.tag
-                    
-                    # #region agent log
-                    try:
-                        with open('/Users/wesley/wokerspacs/jar2docker/.cursor/debug.log', 'a') as f:
-                            import json, time
-                            # 检查 config 中的 deploy 部分
-                            deploy_section = config.get("deploy", {}) if isinstance(config, dict) else {}
-                            deploy_compose_content = deploy_section.get("compose_content", "") if isinstance(deploy_section, dict) else ""
-                            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"handlers.py:_execute_deploy_task_async:GET_CONFIG","message":"从DeployConfig获取配置","data":{"config_id":task_obj.deploy_config_id,"config_content_length":len(config_content) if config_content else 0,"config_content_full":config_content,"config_keys":list(config.keys()) if isinstance(config, dict) else [],"deploy_section_compose_length":len(deploy_compose_content) if deploy_compose_content else 0,"deploy_section_compose_full":deploy_compose_content,"config_has_deploy":"deploy" in config if isinstance(config, dict) else False},"timestamp":int(time.time()*1000)}) + "\n")
-                    except: pass
-                    # #endregion
-                else:
-                    # 向后兼容：从 task_config 中获取（旧数据）
-                    task_config = task.get("task_config", {})
-                    config_content = task_config.get("config_content", "")
-                    config = task_config.get("config", {})
-                    registry = task_config.get("registry")
-                    tag = task_config.get("tag")
+            for attempt in range(40):
+                db = get_db_session()
+                loaded_ok = False
+                try:
+                    task_obj = (
+                        db.query(Task).filter(Task.task_id == task_id).first()
+                    )
+                    if not task_obj:
+                        if attempt == 0:
+                            print(
+                                f"⏳ 等待部署任务记录可见: task_id={task_id[:8]}... "
+                                f"(SQLite 跨线程提交延迟，将短暂重试)"
+                            )
+                    else:
+                        # 如果任务有 deploy_config_id，从 DeployConfig 表获取配置
+                        if task_obj.deploy_config_id:
+                            deploy_config = (
+                                db.query(DeployConfig)
+                                .filter(
+                                    DeployConfig.config_id
+                                    == task_obj.deploy_config_id
+                                )
+                                .first()
+                            )
+                            if not deploy_config:
+                                raise ValueError(
+                                    f"部署配置不存在: {task_obj.deploy_config_id}"
+                                )
 
-                if not config_content:
-                    raise ValueError("部署任务配置内容为空")
-            finally:
-                db.close()
+                            config_content = deploy_config.config_content or ""
+                            config = deploy_config.config_json or {}
+                            registry = deploy_config.registry
+                            tag = deploy_config.tag
+
+                            # #region agent log
+                            try:
+                                with open(
+                                    "/Users/wesley/wokerspacs/jar2docker/.cursor/debug.log",
+                                    "a",
+                                ) as f:
+                                    import json as _json
+
+                                    deploy_section = (
+                                        config.get("deploy", {})
+                                        if isinstance(config, dict)
+                                        else {}
+                                    )
+                                    deploy_compose_content = (
+                                        deploy_section.get("compose_content", "")
+                                        if isinstance(deploy_section, dict)
+                                        else ""
+                                    )
+                                    f.write(
+                                        _json.dumps(
+                                            {
+                                                "sessionId": "debug-session",
+                                                "runId": "run1",
+                                                "hypothesisId": "F",
+                                                "location": "handlers.py:_execute_deploy_task_async:GET_CONFIG",
+                                                "message": "从DeployConfig获取配置",
+                                                "data": {
+                                                    "config_id": task_obj.deploy_config_id,
+                                                    "config_content_length": len(
+                                                        config_content
+                                                    )
+                                                    if config_content
+                                                    else 0,
+                                                    "config_content_full": config_content,
+                                                    "config_keys": list(
+                                                        config.keys()
+                                                    )
+                                                    if isinstance(config, dict)
+                                                    else [],
+                                                    "deploy_section_compose_length": len(
+                                                        deploy_compose_content
+                                                    )
+                                                    if deploy_compose_content
+                                                    else 0,
+                                                    "deploy_section_compose_full": deploy_compose_content,
+                                                    "config_has_deploy": "deploy"
+                                                    in config
+                                                    if isinstance(config, dict)
+                                                    else False,
+                                                },
+                                                "timestamp": int(
+                                                    time.time() * 1000
+                                                ),
+                                            }
+                                        )
+                                        + "\n"
+                                    )
+                            except Exception:
+                                pass
+                            # #endregion
+                        else:
+                            # 向后兼容：从 task_config 中获取（旧数据）
+                            task_config = task_obj.task_config or {}
+                            config_content = task_config.get(
+                                "config_content", ""
+                            )
+                            config = task_config.get("config", {})
+                            registry = task_config.get("registry")
+                            tag = task_config.get("tag")
+
+                        if not config_content:
+                            raise ValueError("部署任务配置内容为空")
+
+                        loaded_ok = True
+                finally:
+                    db.close()
+
+                if loaded_ok:
+                    break
+                time.sleep(0.05)
+            else:
+                raise ValueError(
+                    f"部署任务不存在: {task_id}（已重试仍查无记录，请检查数据库或并发写入）"
+                )
 
             # 创建DeployTaskManager实例（简化版，只用于执行）
             deploy_manager = DeployTaskManager()
