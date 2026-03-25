@@ -156,30 +156,26 @@
               </div>
             </td>
             <td>
-              <div
-                v-if="task.webhook_token"
-                class="d-flex align-items-center gap-1"
-              >
+              <div v-if="task.webhook_token" class="d-flex align-items-start">
                 <code
-                  class="small"
+                  class="small text-primary"
+                  role="button"
+                  tabindex="0"
                   style="
                     font-size: 0.75rem;
                     word-break: break-all;
-                    max-width: 180px;
+                    max-width: 220px;
                     display: block;
+                    cursor: pointer;
+                    text-decoration: underline;
+                    text-decoration-style: dotted;
                   "
-                  :title="getWebhookUrl(task)"
+                  :title="getWebhookUrl(task) + ' — 点击查看说明与复制'"
+                  @click="showWebhookUrl(task)"
+                  @keydown.enter.prevent="showWebhookUrl(task)"
                 >
                   {{ getWebhookUrl(task) }}
                 </code>
-                <button
-                  class="btn btn-sm btn-link p-0"
-                  @click="copyWebhookUrl(task)"
-                  title="复制 Webhook URL"
-                  style="font-size: 0.875rem; flex-shrink: 0"
-                >
-                  <i class="fas fa-copy"></i>
-                </button>
               </div>
               <span v-else class="text-muted small">未配置</span>
             </td>
@@ -212,14 +208,6 @@
                   title="复制配置"
                 >
                   <i class="fas fa-copy"></i>
-                </button>
-                <button
-                  v-if="task.webhook_token"
-                  class="btn btn-sm btn-outline-success"
-                  @click="showWebhookUrl(task)"
-                  title="查看 Webhook URL 详情"
-                >
-                  <i class="fas fa-link"></i>
                 </button>
                 <button
                   class="btn btn-sm btn-outline-danger"
@@ -4447,35 +4435,6 @@ export default {
         .replace(":3000", ":8000")
         .replace(":5173", ":8000");
       return `${baseUrl}/api/webhook/deploy/${token}`;
-    },
-    copyWebhookUrl(task) {
-      const url = this.getWebhookUrl(task);
-      if (!url) {
-        alert("Webhook URL 未配置");
-        return;
-      }
-      // 复制到剪贴板
-      navigator.clipboard
-        .writeText(url)
-        .then(() => {
-          alert("Webhook URL 已复制到剪贴板");
-        })
-        .catch(() => {
-          // 降级方案：使用传统方法
-          const textarea = document.createElement("textarea");
-          textarea.value = url;
-          textarea.style.position = "fixed";
-          textarea.style.opacity = "0";
-          document.body.appendChild(textarea);
-          textarea.select();
-          try {
-            document.execCommand("copy");
-            alert("Webhook URL 已复制到剪贴板");
-          } catch (err) {
-            alert("复制失败，请手动复制：\n\n" + url);
-          }
-          document.body.removeChild(textarea);
-        });
     },
     showWebhookUrl(task) {
       const url = this.getWebhookUrl(task);

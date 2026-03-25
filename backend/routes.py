@@ -6141,6 +6141,16 @@ async def deploy_webhook_trigger(webhook_token: str, request: Request):
         # 获取请求体（原始字节）
         body = await request.body()
 
+        client_ip = (
+            (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+            or (request.client.host if request.client else "")
+        )
+        ua = (request.headers.get("user-agent") or "")[:120]
+        print(
+            f"📥 [部署Webhook] 收到请求 token={webhook_token[:8]}... "
+            f"client={client_ip} body_len={len(body)} ua={ua!r}"
+        )
+
         # 从 DeployConfig 表查询部署配置
         from backend.database import get_db_session
         from backend.models import DeployConfig
@@ -6260,7 +6270,13 @@ async def deploy_webhook_trigger(webhook_token: str, request: Request):
             )
 
         # 触发部署配置（标记为 webhook 来源）
+        build_manager = BuildTaskManager()
         config_id = deploy_config.config_id
+        print(
+            f"📥 [部署Webhook] 即将执行: config_id={config_id[:8]} "
+            f"app={deploy_config.app_name!r} strategy={webhook_branch_strategy} "
+            f"parsed_branch={webhook_branch!r}"
+        )
         result_task_id = build_manager.execute_deploy_task(
             config_id, trigger_source="webhook"
         )
@@ -6268,6 +6284,27 @@ async def deploy_webhook_trigger(webhook_token: str, request: Request):
         print(
             f"🔔 部署配置 Webhook 触发，已启动部署任务: config_id={config_id[:8]}, task_id={result_task_id[:8]}（trigger_source=webhook）"
         )
+
+        # 写入任务日志，便于在「任务管理」中查看触发来源与分支信息
+        try:
+            allowed_txt = (
+                ", ".join(webhook_allowed_branches)
+                if webhook_allowed_branches
+                else "(未限制)"
+            )
+            build_manager.add_log(
+                result_task_id,
+                (
+                    f"📥 由 Webhook 触发部署\n"
+                    f"  应用: {deploy_config.app_name or '-'}\n"
+                    f"  配置 ID: {config_id}\n"
+                    f"  解析分支: {webhook_branch or '(请求体中无 ref/分支，构建后推送等场景常见)'}\n"
+                    f"  分支策略: {webhook_branch_strategy}\n"
+                    f"  允许分支: {allowed_txt}\n"
+                ),
+            )
+        except Exception as log_err:
+            print(f"⚠️ [部署Webhook] 写入任务触发日志失败: {log_err}")
 
         return JSONResponse(
             {

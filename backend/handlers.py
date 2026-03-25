@@ -5664,7 +5664,8 @@ class BuildTaskManager:
             db.commit()
 
             print(
-                f"🆕 基于配置 {config_id[:8]} 创建新部署任务: {new_task_id[:8]}，trigger_source={trigger_source}"
+                f"🆕 基于配置 {config_id[:8]} 创建新部署任务: {new_task_id[:8]}，"
+                f"app={deploy_config.app_name or '-'}，trigger_source={trigger_source}"
             )
         except Exception as e:
             db.rollback()
