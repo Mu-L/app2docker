@@ -3,7 +3,8 @@
 import json
 import logging
 import asyncio
-from typing import Dict, Any, Optional
+from fnmatch import fnmatch
+from typing import Dict, Any, List, Optional
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -102,3 +103,37 @@ def render_template(template: str, context: Dict[str, Any]) -> str:
     except Exception as e:
         logger.error(f"模板渲染失败: {e}")
         return template
+
+
+def match_branch(
+    branch: str, strategy: str, allowed_branches: List[str]
+) -> bool:
+    """
+    判断任务分支是否匹配 Webhook 的分支策略
+
+    Args:
+        branch: 当前任务分支
+        strategy: 分支策略 ("all" / "select_branches" / "filter_match")
+        allowed_branches: 允许的分支列表
+
+    Returns:
+        是否匹配
+    """
+    if strategy != "select_branches" and strategy != "filter_match":
+        return True
+
+    if not branch:
+        return False
+
+    if not allowed_branches:
+        return False
+
+    if strategy == "select_branches":
+        return branch in allowed_branches
+
+    # filter_match: 支持通配符匹配 (如 feature/*, release/*)
+    for pattern in allowed_branches:
+        if fnmatch(branch, pattern):
+            return True
+
+    return False

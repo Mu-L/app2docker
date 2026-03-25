@@ -6769,7 +6769,9 @@ async def _trigger_post_build_webhooks(
         }
 
         # 触发每个启用的webhook
-        from backend.webhook_trigger import trigger_webhook, render_template
+        from backend.webhook_trigger import trigger_webhook, render_template, match_branch
+
+        task_branch = task_obj.branch or ""
 
         for idx, webhook_config in enumerate(post_build_webhooks):
             if not webhook_config.get("enabled", True):
@@ -6779,6 +6781,15 @@ async def _trigger_post_build_webhooks(
             url = webhook_config.get("url")
             if not url:
                 print(f"⚠️ Webhook {idx + 1} 配置缺少URL，跳过")
+                continue
+
+            # 分支策略过滤
+            branch_strategy = webhook_config.get("branch_strategy", "all")
+            branches = webhook_config.get("branches", [])
+            if not match_branch(task_branch, branch_strategy, branches):
+                print(
+                    f"⏭️ Webhook {idx + 1} 分支不匹配，跳过: branch={task_branch}, strategy={branch_strategy}, allowed={branches}"
+                )
                 continue
 
             method = webhook_config.get("method", "POST")

@@ -1903,14 +1903,125 @@
                           </div>
                           <div class="mb-2">
                             <label class="form-label small"
-                              >URL <span class="text-danger">*</span></label
+                              >分支策略</label
                             >
+                            <div
+                              class="btn-group w-100 d-flex flex-wrap"
+                              role="group"
+                              style="gap: 0.25rem"
+                            >
+                              <input
+                                type="radio"
+                                class="btn-check"
+                                :id="`post-wh-branch-all-${index}`"
+                                value="all"
+                                v-model="webhook.branch_strategy"
+                              />
+                              <label
+                                class="btn btn-outline-primary flex-fill"
+                                :for="`post-wh-branch-all-${index}`"
+                                style="white-space: normal; padding: 0.35rem"
+                              >
+                                <small class="fw-bold">所有分支</small>
+                              </label>
+                              <input
+                                type="radio"
+                                class="btn-check"
+                                :id="`post-wh-branch-select-${index}`"
+                                value="select_branches"
+                                v-model="webhook.branch_strategy"
+                              />
+                              <label
+                                class="btn btn-outline-primary flex-fill"
+                                :for="`post-wh-branch-select-${index}`"
+                                style="white-space: normal; padding: 0.35rem"
+                              >
+                                <small class="fw-bold">选择分支</small>
+                              </label>
+                              <input
+                                type="radio"
+                                class="btn-check"
+                                :id="`post-wh-branch-match-${index}`"
+                                value="filter_match"
+                                v-model="webhook.branch_strategy"
+                              />
+                              <label
+                                class="btn btn-outline-primary flex-fill"
+                                :for="`post-wh-branch-match-${index}`"
+                                style="white-space: normal; padding: 0.35rem"
+                              >
+                                <small class="fw-bold">匹配分支</small>
+                              </label>
+                            </div>
+                            <small class="text-muted d-block mt-1">
+                              <span v-if="webhook.branch_strategy === 'all'">
+                                所有分支构建完成后都触发此 Webhook
+                              </span>
+                              <span v-else-if="webhook.branch_strategy === 'select_branches'">
+                                仅指定分支构建完成后触发（精确匹配）
+                              </span>
+                              <span v-else>
+                                仅匹配指定模式的分支触发（支持通配符，如 feature/*）
+                              </span>
+                            </small>
+                          </div>
+                          <div
+                            v-if="webhook.branch_strategy === 'select_branches' || webhook.branch_strategy === 'filter_match'"
+                            class="mb-2"
+                          >
+                            <label class="form-label small">
+                              <span v-if="webhook.branch_strategy === 'select_branches'">允许的分支</span>
+                              <span v-else>匹配模式</span>
+                              <span class="text-danger">*</span>
+                            </label>
                             <input
-                              v-model="webhook.url"
                               type="text"
                               class="form-control form-control-sm"
-                              placeholder="https://example.com/webhook"
+                              :placeholder="webhook.branch_strategy === 'filter_match' ? 'main, feature/*, release/*' : 'main, develop, staging'"
+                              :value="(webhook.branches || []).join(', ')"
+                              @input="webhook.branches = $event.target.value.split(',').map(b => b.trim()).filter(Boolean)"
                             />
+                            <small class="text-muted">多个分支用逗号分隔</small>
+                          </div>
+                          <div class="mb-2">
+                            <label class="form-label small">
+                              URL <span class="text-danger">*</span>
+                              <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary ms-2 py-0 px-1"
+                                style="font-size: 0.7rem; vertical-align: middle"
+                                title="从部署任务中选择"
+                                @click="loadDeployTasks"
+                              >
+                                <i class="fas fa-link"></i> 从部署任务选择
+                              </button>
+                            </label>
+                            <div class="input-group input-group-sm">
+                              <input
+                                v-model="webhook.url"
+                                type="text"
+                                class="form-control form-control-sm"
+                                placeholder="https://example.com/webhook"
+                              />
+                              <select
+                                class="form-select form-select-sm"
+                                style="max-width: 200px; flex: none"
+                                @change="onDeployTaskSelected(webhook, $event.target.value); $event.target.value = ''"
+                              >
+                                <option value="" disabled>选择部署任务...</option>
+                                <option
+                                  v-for="task in deployTaskList"
+                                  :key="task.task_id"
+                                  :value="task.task_id"
+                                >
+                                  {{ task.app_name || task.task_id.substring(0, 8) }}
+                                </option>
+                              </select>
+                            </div>
+                            <small class="text-muted d-block mt-1" v-if="webhook.url && webhook.url.includes('/api/webhook/deploy/')">
+                              <i class="fas fa-info-circle"></i>
+                              已自动填充部署任务 Webhook URL
+                            </small>
                           </div>
                           <div class="row g-2 mb-2">
                             <div class="col-md-6">
@@ -3664,6 +3775,7 @@ const multiServiceBackup = ref({
 });
 const webhookUrl = ref("");
 const webhookUrlInput = ref(null);
+const deployTaskList = ref([]); // 部署任务列表（用于构建后Webhook快捷选择）
 const editingPipeline = ref(null);
 const currentPipeline = ref(null);
 const historyTasks = ref([]);
@@ -3768,6 +3880,7 @@ onMounted(() => {
   loadRegistries();
   loadGitSources();
   loadResourcePackages();
+  loadDeployTasks();
 
   // 监听构建配置保存事件
   window.addEventListener("buildConfigSaved", () => {
@@ -4264,6 +4377,32 @@ async function loadRegistries() {
   }
 }
 
+async function loadDeployTasks() {
+  try {
+    const res = await axios.get("/api/deploy-tasks");
+    deployTaskList.value = res.data.tasks || [];
+  } catch (error) {
+    console.error("加载部署任务列表失败:", error);
+  }
+}
+
+function getDeployWebhookUrl(token) {
+  const baseUrl = window.location.origin
+    .replace(":3000", ":8000")
+    .replace(":5173", ":8000");
+  return `${baseUrl}/api/webhook/deploy/${token}`;
+}
+
+function onDeployTaskSelected(webhook, configId) {
+  const task = deployTaskList.value.find((t) => t.task_id === configId);
+  if (!task) return;
+  const token = task.webhook_token;
+  if (token) {
+    webhook.url = getDeployWebhookUrl(token);
+    webhook.method = "POST";
+  }
+}
+
 function showCreateModal() {
   editingPipeline.value = null;
   formData.value = {
@@ -4399,6 +4538,8 @@ function editPipeline(pipeline) {
         headers_json: JSON.stringify(webhook.headers || {}, null, 2),
         body_template: webhook.body_template || "{}",
         enabled: webhook.enabled !== false,
+        branch_strategy: webhook.branch_strategy || "all",
+        branches: webhook.branches || [],
       }));
     })(),
     enabled: pipeline.enabled !== false,
@@ -4515,6 +4656,8 @@ function addPostBuildWebhook() {
     body_template:
       '{"task_id": "{task_id}", "image": "{image}", "tag": "{tag}", "status": "{status}"}',
     enabled: true,
+    branch_strategy: "all",
+    branches: [],
   });
 }
 
@@ -4840,6 +4983,8 @@ async function savePipeline() {
             method: webhook.method || "POST",
             body_template: webhook.body_template || "{}",
             enabled: webhook.enabled !== false,
+            branch_strategy: webhook.branch_strategy || "all",
+            branches: webhook.branches || [],
           };
           // 解析headers_json为对象
           if (webhook.headers_json) {
