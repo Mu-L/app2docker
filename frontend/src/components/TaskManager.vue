@@ -1050,6 +1050,7 @@ const filtering = ref(false); // 筛选中的状态（轻量级loading）
 const error = ref(null);
 const statusFilter = ref("");
 const categoryFilter = ref("");
+const deployConfigFilterId = ref(null);
 let filterDebounceTimer = null; // 防抖定时器
 const downloading = ref(null);
 const deleting = ref(null);
@@ -1329,6 +1330,7 @@ async function loadTasks(includeStats = true) {
     };
     if (statusFilter.value) params.status = statusFilter.value;
     if (categoryFilter.value) params.task_type = categoryFilter.value;
+    if (deployConfigFilterId.value) params.deploy_config_id = deployConfigFilterId.value;
 
     // 根据是否需要统计信息决定是否并行加载
     if (includeStats) {
@@ -2378,6 +2380,13 @@ onMounted(() => {
   if (statusFilterFromStorage) {
     statusFilter.value = statusFilterFromStorage;
     sessionStorage.removeItem("taskStatusFilter"); // 使用后清除
+  }
+  // 检查是否有从部署配置管理传递过来的筛选条件
+  const deployConfigId = sessionStorage.getItem("deployConfigFilter");
+  if (deployConfigId) {
+    deployConfigFilterId.value = deployConfigId;
+    categoryFilter.value = "deploy";
+    sessionStorage.removeItem("deployConfigFilter");
   }
   loadTasks();
   // 启动定时刷新（如果有运行中的任务）

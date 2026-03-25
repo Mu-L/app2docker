@@ -2204,6 +2204,7 @@ async def get_all_tasks(
     task_type: Optional[str] = Query(
         None, description="任务类型过滤: build, build_from_source, export, deploy"
     ),
+    deploy_config_id: Optional[str] = Query(None, description="按部署配置ID筛选"),
     page: int = Query(1, ge=1, description="页码，从1开始"),
     page_size: int = Query(10, ge=1, le=1000, description="每页数量"),
 ):
@@ -2257,6 +2258,8 @@ async def get_all_tasks(
                     query = db.query(Task).filter(Task.task_type == "deploy")
                     if status:
                         query = query.filter(Task.status == status)
+                    if deploy_config_id:
+                        query = query.filter(Task.deploy_config_id == deploy_config_id)
                     deploy_tasks = query.order_by(Task.created_at.desc()).all()
 
                     # 查询所有配置（用于关联显示配置信息）

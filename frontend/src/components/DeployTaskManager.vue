@@ -3172,7 +3172,7 @@ export default {
       // 跳转到任务管理页面，筛选该配置的任务
       const configId = task.task_id;
       sessionStorage.setItem("deployConfigFilter", configId);
-      window.location.href = "/#/tasks?deploy_config=" + configId;
+      window.dispatchEvent(new CustomEvent("navigate", { detail: { tab: "tasks" } }));
     },
     async deleteTask(task) {
       if (!confirm("确定要删除此部署配置吗？")) return;

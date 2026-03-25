@@ -611,11 +611,21 @@ onMounted(async () => {
 
   // 添加点击外部关闭弹出框的监听
   document.addEventListener("click", handleClickOutside);
+
+  // 监听子组件的页面导航事件（如从部署配置跳转到任务管理）
+  window.addEventListener("navigate", handleNavigateEvent);
 });
+
+function handleNavigateEvent(e) {
+  if (e.detail && e.detail.tab) {
+    activeTab.value = e.detail.tab;
+  }
+}
 
 onUnmounted(() => {
   stopRunningTasksTimer();
   document.removeEventListener("click", handleClickOutside);
+  window.removeEventListener("navigate", handleNavigateEvent);
 });
 </script>
 
