@@ -53,9 +53,10 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
 
 
 # 创建会话工厂
-SessionLocal = scoped_session(
-    sessionmaker(autocommit=False, autoflush=False, bind=engine)
-)
+# SessionFactory: 每次调用返回独立 Session，适用于后台任务/工具函数
+# SessionLocal(scoped_session): 线程级 Session，保留给需要线程上下文复用的场景
+SessionFactory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = scoped_session(SessionFactory)
 
 # 线程本地存储
 _local = threading.local()
@@ -63,7 +64,7 @@ _local = threading.local()
 
 def get_db():
     """获取数据库会话（用于依赖注入）"""
-    db = SessionLocal()
+    db = SessionFactory()
     try:
         yield db
     finally:
@@ -72,7 +73,8 @@ def get_db():
 
 def get_db_session():
     """获取数据库会话（用于直接调用）"""
-    return SessionLocal()
+    # 返回独立 Session，避免 scoped_session 在同线程嵌套调用时互相影响
+    return SessionFactory()
 
 
 def init_db():

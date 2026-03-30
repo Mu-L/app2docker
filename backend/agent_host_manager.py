@@ -649,19 +649,21 @@ docker stack deploy -c docker-compose.yml app2docker-agent
         """
         db = get_db_session()
         try:
-            # 获取所有 Portainer 类型的主机
+            # 只读取基础字段，避免 scoped_session 在嵌套调用中关闭后出现 detached instance
             portainer_hosts = (
-                db.query(AgentHost).filter(AgentHost.host_type == "portainer").all()
+                db.query(AgentHost.host_id, AgentHost.name)
+                .filter(AgentHost.host_type == "portainer")
+                .all()
             )
 
-            for host in portainer_hosts:
+            for host_id, host_name in portainer_hosts:
                 try:
                     # 更新状态（内部有重试机制）
                     self.update_portainer_host_status(
-                        host.host_id, retry_count=2
+                        host_id, retry_count=2
                     )  # 定期检测使用较少重试次数
                 except Exception as e:
-                    logger.warning(f"检查 Portainer 主机 {host.name} 状态失败: {e}")
+                    logger.warning(f"检查 Portainer 主机 {host_name} 状态失败: {e}")
         finally:
             db.close()
 
