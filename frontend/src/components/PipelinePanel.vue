@@ -1786,7 +1786,7 @@
                     </label>
                     <small class="text-muted d-block mb-2">
                       为不同分支设置不同的镜像标签，支持通配符（如
-                      feature/*）。一个分支可以设置多个标签，用逗号分隔（如：latest,v1.0.0）。标签支持动态日期占位符（${DATE}、${DATE:YYYY-MM-DD}、${TIMESTAMP}）
+                      feature/*）。一个分支可以设置多个标签，用半角逗号（,）分隔（如：latest,v1.0.0）。标签支持动态日期占位符（${DATE}、${DATE:YYYY-MM-DD}、${TIMESTAMP}）
                     </small>
                     <div
                       v-if="
@@ -1813,11 +1813,16 @@
                         </div>
                         <div class="col-md-5">
                           <input
-                            v-model="mapping.tag"
+                            :value="mapping.tag"
                             type="text"
                             class="form-control form-control-sm"
                             placeholder="标签（如：latest 或 latest,v1.0.0）"
-                            title="支持多个标签，用逗号分隔"
+                            title="多个标签用半角逗号（,）分隔"
+                            @input="
+                              mapping.tag = normalizeAsciiCommaSeparators(
+                                $event.target.value
+                              )
+                            "
                           />
                         </div>
                         <div class="col-md-1">
@@ -1977,11 +1982,15 @@
                             <input
                               type="text"
                               class="form-control form-control-sm"
+                              inputmode="text"
+                              autocomplete="off"
                               :placeholder="webhook.branch_strategy === 'filter_match' ? 'main, feature/*, release/*' : 'main, develop, staging'"
                               :value="(webhook.branches || []).join(', ')"
-                              @input="webhook.branches = $event.target.value.replace(/，/g, ',').split(',').map(b => b.trim()).filter(Boolean)"
+                              @input="onPostBuildWebhookBranchesInput(webhook, $event)"
                             />
-                            <small class="text-muted">多个分支用逗号分隔</small>
+                            <small class="text-muted"
+                              >多个分支用半角逗号（,）分隔；输入全角逗号会自动变为半角</small
+                            >
                           </div>
                           <div class="mb-2">
                             <label class="form-label small">
@@ -3733,6 +3742,16 @@ import {
   getProjectTypeIcon,
   getProjectTypeBadgeClass 
 } from '../utils/projectTypes.js';
+
+/** 分隔列表时仅使用半角逗号：输入中的全角逗号自动转为半角 */
+function normalizeAsciiCommaSeparators(s) {
+  return String(s ?? "").replace(/\uFF0C/g, ",");
+}
+
+function onPostBuildWebhookBranchesInput(webhook, e) {
+  const raw = normalizeAsciiCommaSeparators(e.target.value);
+  webhook.branches = raw.split(",").map((b) => b.trim()).filter(Boolean);
+}
 
 // 项目类型相关
 const projectTypesList = ref(getProjectTypesSync()); // 从缓存获取项目类型列表
