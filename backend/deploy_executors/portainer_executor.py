@@ -82,6 +82,30 @@ class PortainerExecutor(DeployExecutor):
             api_key,
             self.portainer_endpoint_id
         )
+
+    @staticmethod
+    def _is_retryable_error(error_text: str) -> bool:
+        """判断错误是否适合自动重试（网络抖动/网关瞬时失败等）。"""
+        if not error_text:
+            return False
+        msg = error_text.lower()
+        retryable_keywords = [
+            "timeout",
+            "timed out",
+            "连接超时",
+            "connection reset",
+            "connection aborted",
+            "temporarily unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "service unavailable",
+            "eof",
+            "remote disconnected",
+            "api 错误 (502)",
+            "api 错误 (503)",
+            "api 错误 (504)",
+        ]
+        return any(k in msg for k in retryable_keywords)
     
     async def execute(
         self,
@@ -251,13 +275,13 @@ class PortainerExecutor(DeployExecutor):
                 
                 # 使用重试机制执行部署
                 result = None
-                max_retries = 3
+                max_retries = 5
                 last_error = None
                 
                 for attempt in range(max_retries):
                     try:
                         if attempt > 0:
-                            wait_time = attempt * 2
+                            wait_time = min(12, 2 ** attempt)
                             logger.info(f"第 {attempt + 1} 次尝试部署 Stack（等待 {wait_time} 秒后重试）...")
                             if update_status_callback:
                                 update_status_callback(f"Stack 部署失败，{wait_time}秒后重试（{attempt + 1}/{max_retries}）...")
@@ -275,17 +299,17 @@ class PortainerExecutor(DeployExecutor):
                         
                     except Exception as e:
                         last_error = str(e)
-                        error_msg = last_error.lower()
-                        
-                        if "connection reset" in error_msg or "connection aborted" in error_msg:
+                        if self._is_retryable_error(last_error):
                             if attempt < max_retries - 1:
-                                logger.warning(f"Stack 部署时连接被重置（尝试 {attempt + 1}/{max_retries}）: {e}")
+                                logger.warning(
+                                    f"Stack 部署出现可重试异常（尝试 {attempt + 1}/{max_retries}）: {e}"
+                                )
                                 continue
                             else:
                                 logger.error(f"Stack 部署失败（{max_retries}次重试后）: {e}")
                                 result = {
                                     "success": False,
-                                    "message": f"Stack 部署失败：连接被重置（已重试 {max_retries} 次），可能是 Portainer 服务器不稳定或网络问题"
+                                    "message": f"Stack 部署失败：连接超时/网络抖动（已重试 {max_retries} 次），请检查 Portainer 稳定性后重试"
                                 }
                         else:
                             logger.error(f"[Portainer] Stack 部署失败（不可重试的错误）: {e}")
@@ -349,13 +373,13 @@ class PortainerExecutor(DeployExecutor):
                 
                 # 使用重试机制执行部署
                 result = None
-                max_retries = 3
+                max_retries = 5
                 last_error = None
                 
                 for attempt in range(max_retries):
                     try:
                         if attempt > 0:
-                            wait_time = attempt * 2
+                            wait_time = min(12, 2 ** attempt)
                             logger.info(f"第 {attempt + 1} 次尝试部署（等待 {wait_time} 秒后重试）...")
                             if update_status_callback:
                                 update_status_callback(f"部署失败，{wait_time}秒后重试（{attempt + 1}/{max_retries}）...")
@@ -376,17 +400,17 @@ class PortainerExecutor(DeployExecutor):
                         
                     except Exception as e:
                         last_error = str(e)
-                        error_msg = last_error.lower()
-                        
-                        if "connection reset" in error_msg or "connection aborted" in error_msg:
+                        if self._is_retryable_error(last_error):
                             if attempt < max_retries - 1:
-                                logger.warning(f"[Portainer] 部署时连接被重置（尝试 {attempt + 1}/{max_retries}）: {e}")
+                                logger.warning(
+                                    f"[Portainer] 部署出现可重试异常（尝试 {attempt + 1}/{max_retries}）: {e}"
+                                )
                                 continue
                             else:
                                 logger.error(f"[Portainer] 部署失败（{max_retries}次重试后）: {e}")
                                 result = {
                                     "success": False,
-                                    "message": f"部署失败：连接被重置（已重试 {max_retries} 次），可能是 Portainer 服务器不稳定或网络问题",
+                                    "message": f"部署失败：连接超时/网络抖动（已重试 {max_retries} 次），请检查 Portainer 稳定性后重试",
                                     "host_type": "portainer",
                                     "deploy_method": "portainer_api",
                                     "host_name": target_name

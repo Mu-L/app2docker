@@ -68,9 +68,9 @@ class PortainerClient:
         """
         url = f"{self.url}{endpoint}"
         try:
-            # 设置默认超时时间（10秒）
+            # 设置默认超时时间（20秒）
             if 'timeout' not in kwargs:
-                kwargs['timeout'] = 10
+                kwargs['timeout'] = 20
             logger.debug(f"Portainer API 请求: {method} {url}")
             request_headers = kwargs.pop("headers", {})
             headers = {
