@@ -103,6 +103,28 @@
           </div>
         </div>
       </div>
+
+      <!-- 全局队列状态 -->
+      <div class="card info-card info-card-warning">
+        <div class="card-body">
+          <div class="d-flex align-items-start">
+            <div class="info-icon-wrapper">
+              <div class="info-icon bg-warning">
+                <i class="fas fa-stream"></i>
+              </div>
+            </div>
+            <div class="flex-grow-1 ms-3">
+              <div class="info-label">全局并发</div>
+              <div class="info-value">
+                {{ queueRunningCount }}/{{ maxConcurrentTasks }}
+              </div>
+              <div class="info-sub mt-2">
+                <small class="text-muted">排队中 {{ queuePendingCount }} 个任务</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -248,6 +270,14 @@
 
         <button class="btn btn-sm btn-outline-primary" @click="loadTasks">
           <i class="fas fa-sync-alt"></i> 刷新
+        </button>
+        <button
+          class="btn btn-sm btn-outline-warning"
+          @click="updateMaxConcurrentTasks"
+          :disabled="savingSystemSettings"
+          title="修改全局最大并发任务数"
+        >
+          <i class="fas fa-sliders-h"></i> 并发设置
         </button>
         <div class="btn-group">
           <button
@@ -1075,6 +1105,10 @@ const saving = ref(false); // 保存中状态
 const showConfigModal = ref(false); // 任务配置JSON模态框
 const taskConfigJson = ref(""); // 任务配置JSON
 const taskConfigJsonText = ref(""); // JSON文本内容（用于CodeMirror）
+const maxConcurrentTasks = ref(3);
+const queueRunningCount = ref(0);
+const queuePendingCount = ref(0);
+const savingSystemSettings = ref(false);
 
 // CodeMirror 扩展配置（JSON模式，使用JavaScript模式）
 const jsonEditorExtensions = [StreamLanguage.define(javascript), oneDark];
@@ -1335,7 +1369,11 @@ async function loadTasks(includeStats = true) {
     // 根据是否需要统计信息决定是否并行加载
     if (includeStats) {
       // 同时加载编译目录和下载目录统计
-      await Promise.all([loadBuildDirStats(), loadExportDirStats()]);
+      await Promise.all([
+        loadBuildDirStats(),
+        loadExportDirStats(),
+        loadSystemQueueSettings(),
+      ]);
     }
 
     const res = await axios.get("/api/tasks", { params });
@@ -1355,6 +1393,43 @@ async function loadTasks(includeStats = true) {
   } finally {
     loading.value = false;
     filtering.value = false;
+  }
+}
+
+async function loadSystemQueueSettings() {
+  try {
+    const res = await axios.get("/api/system-settings");
+    maxConcurrentTasks.value = res.data.max_concurrent_tasks || 3;
+    queueRunningCount.value = res.data.running_count || 0;
+    queuePendingCount.value = res.data.pending_count || 0;
+  } catch (err) {
+    console.error("获取系统并发设置失败:", err);
+  }
+}
+
+async function updateMaxConcurrentTasks() {
+  if (savingSystemSettings.value) return;
+  const input = prompt(
+    `请输入全局最大并发任务数（当前 ${maxConcurrentTasks.value}）：`,
+    String(maxConcurrentTasks.value)
+  );
+  if (!input) return;
+  const value = Number(input);
+  if (!Number.isInteger(value) || value < 1) {
+    alert("请输入大于等于 1 的整数");
+    return;
+  }
+  savingSystemSettings.value = true;
+  try {
+    await axios.put("/api/system-settings", { max_concurrent_tasks: value });
+    await loadSystemQueueSettings();
+    await loadTasks(false);
+  } catch (err) {
+    const errorMsg =
+      err.response?.data?.detail || err.message || "更新系统设置失败";
+    alert(errorMsg);
+  } finally {
+    savingSystemSettings.value = false;
   }
 }
 
@@ -2389,6 +2464,7 @@ onMounted(() => {
     sessionStorage.removeItem("deployConfigFilter");
   }
   loadTasks();
+  loadSystemQueueSettings();
   // 启动定时刷新（如果有运行中的任务）
   startRefreshInterval();
 });
@@ -2471,6 +2547,10 @@ onUnmounted(() => {
   background: linear-gradient(90deg, #10b981 0%, #059669 100%);
 }
 
+.info-card-warning::before {
+  background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+}
+
 .info-card:hover {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   transform: translateY(-4px);
@@ -2519,6 +2599,10 @@ onUnmounted(() => {
 
 .info-icon.bg-success {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+}
+
+.info-icon.bg-warning {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
 }
 
 .info-label {

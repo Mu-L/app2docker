@@ -131,6 +131,7 @@ def init_db():
     # 迁移：创建deploy_configs表
     migrate_add_deploy_config_table()
     migrate_deploy_task_architecture()
+    migrate_init_system_settings()
 
     print(f"✅ 数据库初始化完成: {DB_FILE}")
 
@@ -1001,6 +1002,19 @@ def migrate_deploy_task_architecture():
         print(f"⚠️ 迁移部署任务架构失败: {e}")
         import traceback
         traceback.print_exc()
+
+
+def migrate_init_system_settings():
+    """迁移：初始化系统设置默认值"""
+    if not os.path.exists(DB_FILE):
+        return
+    try:
+        from backend.task_queue_manager import GlobalTaskQueueManager
+
+        GlobalTaskQueueManager().ensure_defaults()
+        print("✅ system_settings 默认配置已初始化")
+    except Exception as e:
+        print(f"⚠️ 初始化 system_settings 失败: {e}")
 
 
 def close_db():

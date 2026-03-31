@@ -1526,6 +1526,145 @@ async def save_config_route(
         raise HTTPException(status_code=500, detail=f"保存配置失败: {str(e)}")
 
 
+@router.get("/system-settings")
+async def get_system_settings():
+    """获取系统设置（含全局任务并发与队列状态）。"""
+    try:
+        from backend.task_queue_manager import GlobalTaskQueueManager
+
+        queue_manager = GlobalTaskQueueManager()
+        return JSONResponse(
+            {
+                "max_concurrent_tasks": queue_manager.get_max_concurrent(),
+                "running_count": queue_manager.get_running_count(),
+                "pending_count": queue_manager.get_pending_count(),
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取系统设置失败: {str(e)}")
+
+
+@router.put("/system-settings")
+async def update_system_settings(
+    request: Request,
+    max_concurrent_tasks: int = Body(..., embed=True),
+):
+    """更新系统设置（当前支持最大并发任务数）。"""
+    try:
+        username = get_current_username(request)
+        from backend.task_queue_manager import GlobalTaskQueueManager
+        from backend.handlers import _process_global_queued_tasks
+
+        queue_manager = GlobalTaskQueueManager()
+        new_value = queue_manager.set_max_concurrent(max_concurrent_tasks)
+        _process_global_queued_tasks()
+
+        OperationLogger.log(
+            username,
+            "update_system_settings",
+            {"max_concurrent_tasks": new_value},
+        )
+        return JSONResponse(
+            {
+                "success": True,
+                "max_concurrent_tasks": new_value,
+                "running_count": queue_manager.get_running_count(),
+                "pending_count": queue_manager.get_pending_count(),
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新系统设置失败: {str(e)}")
+
+
+@router.get("/task-queue/status")
+async def get_task_queue_status():
+    """获取全局任务队列状态。"""
+    try:
+        from backend.database import get_db_session
+        from backend.models import ExportTask, Task
+        from backend.task_queue_manager import GlobalTaskQueueManager
+
+        queue_manager = GlobalTaskQueueManager()
+        db = get_db_session()
+        try:
+            running_tasks = (
+                db.query(Task)
+                .filter(Task.status == "running")
+                .order_by(Task.created_at.asc())
+                .all()
+            )
+            pending_tasks = (
+                db.query(Task)
+                .filter(Task.status == "pending")
+                .filter(Task.task_type.in_(["build_from_source", "deploy"]))
+                .order_by(Task.created_at.asc())
+                .all()
+            )
+            running_exports = (
+                db.query(ExportTask)
+                .filter(ExportTask.status == "running")
+                .order_by(ExportTask.created_at.asc())
+                .all()
+            )
+            pending_exports = (
+                db.query(ExportTask)
+                .filter(ExportTask.status == "pending")
+                .order_by(ExportTask.created_at.asc())
+                .all()
+            )
+            return JSONResponse(
+                {
+                    "max_concurrent_tasks": queue_manager.get_max_concurrent(),
+                    "running_count": queue_manager.get_running_count(),
+                    "pending_count": queue_manager.get_pending_count(),
+                    "running_tasks": [
+                        {
+                            "task_id": t.task_id,
+                            "task_type": t.task_type,
+                            "created_at": t.created_at.isoformat()
+                            if t.created_at
+                            else None,
+                        }
+                        for t in running_tasks
+                    ],
+                    "pending_tasks": [
+                        {
+                            "task_id": t.task_id,
+                            "task_type": t.task_type,
+                            "created_at": t.created_at.isoformat()
+                            if t.created_at
+                            else None,
+                        }
+                        for t in pending_tasks
+                    ],
+                    "running_export_tasks": [
+                        {
+                            "task_id": t.task_id,
+                            "task_type": t.task_type,
+                            "created_at": t.created_at.isoformat()
+                            if t.created_at
+                            else None,
+                        }
+                        for t in running_exports
+                    ],
+                    "pending_export_tasks": [
+                        {
+                            "task_id": t.task_id,
+                            "task_type": t.task_type,
+                            "created_at": t.created_at.isoformat()
+                            if t.created_at
+                            else None,
+                        }
+                        for t in pending_exports
+                    ],
+                }
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取队列状态失败: {str(e)}")
+
+
 # === 构建相关 ===
 @router.post("/upload")
 async def upload_file(

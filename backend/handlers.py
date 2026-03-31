@@ -28,6 +28,7 @@ from backend.config import (
 )
 from backend.utils import generate_image_name, get_safe_filename
 from backend.auth import authenticate, verify_token, require_auth
+from backend.task_queue_manager import GlobalTaskQueueManager
 
 # 目录配置
 UPLOAD_DIR = "data/uploads"
@@ -2318,6 +2319,55 @@ class BuildManager:
             trigger_source=trigger_source,
         )
 
+    def _start_build_from_source_thread(self, task_id: str, task_config: dict):
+        """按已有 task_config 启动构建线程（用于全局队列调度）。"""
+        git_url = task_config.get("git_url")
+        image_name = task_config.get("image_name")
+        tag = task_config.get("tag", "latest")
+        branch = task_config.get("branch")
+        project_type = task_config.get("project_type", "jar")
+        template = task_config.get("template", "")
+        template_params = task_config.get("template_params", {})
+        should_push = task_config.get("should_push", False)
+        sub_path = task_config.get("sub_path")
+        use_project_dockerfile = task_config.get("use_project_dockerfile", True)
+        dockerfile_name = task_config.get("dockerfile_name", "Dockerfile")
+        source_id = task_config.get("source_id")
+        selected_services = task_config.get("selected_services")
+        service_push_config = task_config.get("service_push_config")
+        service_template_params = task_config.get("service_template_params", {})
+        push_mode = task_config.get("push_mode", "multi")
+        resource_package_ids = task_config.get("resource_package_ids", [])
+
+        thread = threading.Thread(
+            target=self._build_from_source_task,
+            args=(
+                task_id,
+                git_url,
+                image_name,
+                tag,
+                should_push,
+                template,
+                project_type,
+                template_params or {},
+                None,
+                branch,
+                sub_path,
+                use_project_dockerfile,
+                dockerfile_name,
+                source_id,
+                selected_services,
+                service_push_config,
+                push_mode,
+                service_template_params,
+                resource_package_ids or [],
+            ),
+            daemon=True,
+        )
+        thread.start()
+        with self.lock:
+            self.tasks[task_id] = thread
+
     def start_build_from_source(
         self,
         git_url: str,
@@ -2381,35 +2431,35 @@ class BuildManager:
             raise RuntimeError(f"创建构建任务失败: {str(e)}")
 
         try:
-            thread = threading.Thread(
-                target=self._build_from_source_task,
-                args=(
+            queue_manager = GlobalTaskQueueManager()
+            started = queue_manager.start_if_slot_available(
+                lambda: self._start_build_from_source_thread(
                     task_id,
-                    git_url,
-                    image_name,
-                    tag,
-                    should_push,
-                    selected_template,
-                    project_type,
-                    template_params or {},
-                    push_registry,
-                    branch,
-                    sub_path,
-                    use_project_dockerfile,
-                    dockerfile_name,
-                    source_id,
-                    selected_services,
-                    service_push_config,
-                    push_mode,
-                    service_template_params,  # 传递服务模板参数
-                    resource_package_ids or [],  # 传递资源包ID列表
-                ),
-                daemon=True,
+                    {
+                        "git_url": git_url,
+                        "image_name": image_name,
+                        "tag": tag,
+                        "branch": branch,
+                        "project_type": project_type,
+                        "template": selected_template,
+                        "template_params": template_params or {},
+                        "should_push": should_push,
+                        "sub_path": sub_path,
+                        "use_project_dockerfile": use_project_dockerfile,
+                        "dockerfile_name": dockerfile_name,
+                        "source_id": source_id,
+                        "selected_services": selected_services,
+                        "service_push_config": service_push_config,
+                        "service_template_params": service_template_params or {},
+                        "push_mode": push_mode,
+                        "resource_package_ids": resource_package_ids or [],
+                    },
+                )
             )
-            thread.start()
-            print(f"✅ 构建线程已启动: task_id={task_id}")
-            with self.lock:
-                self.tasks[task_id] = thread
+            if started:
+                print(f"✅ 构建线程已启动: task_id={task_id}")
+            else:
+                print(f"⏳ 构建任务进入全局队列等待: task_id={task_id}")
         except Exception as e:
             import traceback
 
@@ -4064,6 +4114,68 @@ logs/
 
 
 # ============ 队列处理函数 ============
+def _process_global_queued_tasks():
+    """处理全局等待队列：在并发槽位可用时，启动最早的 pending 任务。"""
+    from backend.database import get_db_session
+    from backend.models import ExportTask, Task
+
+    queue_manager = GlobalTaskQueueManager()
+
+    while True:
+        started = False
+        candidate_kind = None
+        candidate_id = None
+        db = get_db_session()
+        try:
+            next_task = (
+                db.query(Task)
+                .filter(Task.status == "pending")
+                .filter(Task.task_type.in_(["build_from_source", "deploy"]))
+                .order_by(Task.created_at.asc())
+                .first()
+            )
+            next_export = (
+                db.query(ExportTask)
+                .filter(ExportTask.status == "pending")
+                .order_by(ExportTask.created_at.asc())
+                .first()
+            )
+
+            if next_task and next_export:
+                task_time = next_task.created_at or datetime.max
+                export_time = next_export.created_at or datetime.max
+                if task_time <= export_time:
+                    candidate_kind = "task"
+                    candidate_id = next_task.task_id
+                else:
+                    candidate_kind = "export"
+                    candidate_id = next_export.task_id
+            elif next_task:
+                candidate_kind = "task"
+                candidate_id = next_task.task_id
+            elif next_export:
+                candidate_kind = "export"
+                candidate_id = next_export.task_id
+        finally:
+            db.close()
+
+        if not candidate_id:
+            return
+
+        def _starter():
+            nonlocal started
+            if candidate_kind == "task":
+                started = BuildTaskManager().start_pending_task(candidate_id)
+            else:
+                started = ExportTaskManager().start_pending_task(candidate_id)
+
+        can_start = queue_manager.start_if_slot_available(_starter)
+        if not can_start:
+            return
+        if not started:
+            return
+
+
 def _process_next_queued_task(pipeline_manager, pipeline_id: str):
     """处理队列中的下一个任务（相同流水线）- 从实际任务列表中获取
 
@@ -4127,11 +4239,20 @@ def _process_next_queued_task(pipeline_manager, pipeline_id: str):
                 )
             return
 
-        # 找到下一个 pending 任务，开始执行
+        # 找到下一个 pending 任务，开始执行（受全局并发限制）
         task_id = next_task.get("task_id")
         task_config = next_task.get("task_config", {})
 
-        # 绑定任务到流水线
+        started = GlobalTaskQueueManager().start_if_slot_available(
+            lambda: build_manager.task_manager.start_pending_task(task_id)
+        )
+        if not started:
+            print(
+                f"⏳ 流水线 {pipeline_id[:8]} 下一个任务因全局并发限制继续等待: {task_id[:8]}"
+            )
+            return
+
+        # 已启动后再绑定任务到流水线
         pipeline_manager.record_trigger(
             pipeline_id,
             task_id,
@@ -4142,59 +4263,6 @@ def _process_next_queued_task(pipeline_manager, pipeline_id: str):
                 "from_queue": True,  # 标记来自队列
             },
         )
-
-        # 重新调用构建逻辑来开始执行任务
-        # 从任务配置中提取参数
-        git_url = task_config.get("git_url")
-        image_name = task_config.get("image_name")
-        tag = task_config.get("tag", "latest")
-        branch = task_config.get("branch")
-        project_type = task_config.get("project_type", "jar")
-        template = task_config.get("template", "")
-        template_params = task_config.get("template_params", {})
-        should_push = task_config.get("should_push", False)
-        sub_path = task_config.get("sub_path")
-        use_project_dockerfile = task_config.get("use_project_dockerfile", True)
-        dockerfile_name = task_config.get("dockerfile_name", "Dockerfile")
-        source_id = task_config.get("source_id")
-        selected_services = task_config.get("selected_services")
-        service_push_config = task_config.get("service_push_config")
-        service_template_params = task_config.get("service_template_params", {})
-        push_mode = task_config.get("push_mode", "multi")
-        resource_package_ids = task_config.get("resource_package_ids", [])
-        trigger_source = task_config.get("trigger_source", "manual")
-
-        # 启动构建线程（使用已有的任务ID）
-        import threading
-
-        thread = threading.Thread(
-            target=build_manager._build_from_source_task,
-            args=(
-                task_id,
-                git_url,
-                image_name,
-                tag,
-                should_push,
-                template,
-                project_type,
-                template_params or {},
-                None,  # push_registry
-                branch,
-                sub_path,
-                use_project_dockerfile,
-                dockerfile_name,
-                source_id,
-                selected_services,
-                service_push_config,
-                push_mode,
-                service_template_params,
-                resource_package_ids or [],
-            ),
-            daemon=True,
-        )
-        thread.start()
-        with build_manager.lock:
-            build_manager.tasks[task_id] = thread
 
         print(f"✅ 队列任务已启动: 流水线 {pipeline_id[:8]}, 任务 {task_id[:8]}")
 
@@ -4932,6 +5000,49 @@ class BuildTaskManager:
         finally:
             db.close()
 
+    def start_pending_task(self, task_id: str) -> bool:
+        """启动一个已存在的 pending 任务（build_from_source/deploy）。"""
+        from backend.database import get_db_session
+        from backend.models import Task
+
+        db = get_db_session()
+        try:
+            task = db.query(Task).filter(Task.task_id == task_id).first()
+            if not task:
+                return False
+            if task.status != "pending":
+                return False
+
+            # 先将状态更新为 running，避免并发调度重复拉起
+            task.status = "running"
+            if not task.started_at:
+                task.started_at = datetime.now()
+            db.commit()
+
+            if task.task_type == "build_from_source":
+                build_manager = BuildManager()
+                task_config = task.task_config or {}
+                build_manager._start_build_from_source_thread(task_id, task_config)
+                return True
+
+            if task.task_type == "deploy":
+                task_config = task.task_config or {}
+                target_names = task_config.get("target_names")
+                thread = threading.Thread(
+                    target=self._execute_deploy_task_in_thread,
+                    args=(task_id, target_names),
+                    daemon=True,
+                )
+                thread.start()
+                return True
+
+            return False
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def update_task_status(self, task_id: str, status: str, error: str = None):
         """更新任务状态"""
         from backend.database import get_db_session
@@ -5044,6 +5155,8 @@ class BuildTaskManager:
                     # 处理队列中的下一个任务（相同流水线）
                     if pipeline_id:
                         _process_next_queued_task(pipeline_manager, pipeline_id)
+                    # 处理全局队列中的下一个任务（跨流水线、跨任务类型）
+                    _process_global_queued_tasks()
                 except Exception as e:
                     print(f"⚠️ 解绑流水线失败: {e}")
                     import traceback
@@ -5073,6 +5186,7 @@ class BuildTaskManager:
             # 只有运行中或等待中的任务才能停止
             if task.status not in ("running", "pending"):
                 return False
+            old_status = task.status
 
             # 设置停止标志
             task.status = "stopped"
@@ -5089,6 +5203,20 @@ class BuildTaskManager:
 
             db.commit()
             print(f"✅ 任务 {task_id[:8]} 已停止")
+
+            # 仅当停止的是运行中任务时，释放全局并发槽位并触发后续调度
+            if old_status == "running":
+                try:
+                    from backend.pipeline_manager import PipelineManager
+
+                    pipeline_manager = PipelineManager()
+                    pipeline_id = pipeline_manager.find_pipeline_by_task(task_id)
+                    if pipeline_id:
+                        pipeline_manager.unbind_task(pipeline_id)
+                        _process_next_queued_task(pipeline_manager, pipeline_id)
+                    _process_global_queued_tasks()
+                except Exception as e:
+                    print(f"⚠️ 停止任务后处理队列失败: {e}")
 
             # 如果是部署任务，取消所有相关的Future
             if task.task_type == "deploy":
@@ -5337,6 +5465,7 @@ class BuildTaskManager:
         config_content: str,
         registry: Optional[str] = None,
         tag: Optional[str] = None,
+        target_names: Optional[List[str]] = None,
         source_config_id: Optional[str] = None,
         webhook_token: Optional[str] = None,
         webhook_secret: Optional[str] = None,
@@ -5397,6 +5526,7 @@ class BuildTaskManager:
                         "registry": registry,
                         "tag": tag,
                         "targets": config.get("targets", []),
+                        "target_names": target_names,
                     }
 
                     task_obj = Task(
@@ -5648,6 +5778,7 @@ class BuildTaskManager:
                 config_content=config_content,
                 registry=registry,
                 tag=tag,
+                target_names=target_names,
                 source_config_id=config_id,  # 关联到配置
                 trigger_source=trigger_source,
                 source=("Webhook" if trigger_source == "webhook" else "手动"),
@@ -5677,16 +5808,12 @@ class BuildTaskManager:
         finally:
             db.close()
 
-        # 更新新任务状态为运行中
-        self.update_task_status(new_task_id, "running")
-
-        # 在后台线程中执行新任务
-        thread = threading.Thread(
-            target=self._execute_deploy_task_in_thread,
-            args=(new_task_id, target_names),
-            daemon=True,
+        queue_manager = GlobalTaskQueueManager()
+        started = queue_manager.start_if_slot_available(
+            lambda: self.start_pending_task(new_task_id)
         )
-        thread.start()
+        if not started:
+            print(f"⏳ 部署任务进入全局队列等待: task_id={new_task_id[:8]}")
 
         return new_task_id
 
@@ -5958,16 +6085,13 @@ class BuildTaskManager:
 
             print(f"🔄 重试部署任务: {task_id[:8]}（在原任务上重试）")
 
-            # 直接执行原任务（不创建新任务）
-            self.update_task_status(task_id, "running")
-
-            # 在后台线程中执行任务
-            thread = threading.Thread(
-                target=self._execute_deploy_task_in_thread,
-                args=(task_id, None),  # target_names 为 None，执行所有目标
-                daemon=True,
+            # 由全局并发队列决定立即执行或排队
+            queue_manager = GlobalTaskQueueManager()
+            started = queue_manager.start_if_slot_available(
+                lambda: self.start_pending_task(task_id)
             )
-            thread.start()
+            if not started:
+                print(f"⏳ 重试部署任务进入全局队列等待: task_id={task_id[:8]}")
 
             return True
         except Exception as e:
@@ -6095,13 +6219,13 @@ class ExportTaskManager:
             db.add(task_obj)
             db.commit()
 
-            # 启动导出任务
-            thread = threading.Thread(
-                target=self._export_task,
-                args=(task_id,),
-                daemon=True,
+            # 通过全局并发控制决定立即启动或进入排队
+            queue_manager = GlobalTaskQueueManager()
+            started = queue_manager.start_if_slot_available(
+                lambda: self.start_pending_task(task_id)
             )
-            thread.start()
+            if not started:
+                print(f"⏳ 导出任务进入全局队列等待: task_id={task_id[:8]}")
 
             return task_id
         except Exception as e:
@@ -6139,6 +6263,8 @@ class ExportTaskManager:
                 task.completed_at = datetime.now()
 
             db.commit()
+            if status in ("completed", "failed", "stopped"):
+                _process_global_queued_tasks()
             return True
         except Exception as e:
             db.rollback()
@@ -6463,6 +6589,7 @@ class ExportTaskManager:
             # 只有运行中或等待中的任务才能停止
             if task.status not in ("running", "pending"):
                 return False
+            old_status = task.status
 
             # 设置停止状态
             task.status = "stopped"
@@ -6471,6 +6598,8 @@ class ExportTaskManager:
 
             db.commit()
             print(f"✅ 导出任务 {task_id[:8]} 已停止")
+            if old_status == "running":
+                _process_global_queued_tasks()
             return True
         except Exception as e:
             db.rollback()
@@ -6520,14 +6649,14 @@ class ExportTaskManager:
 
             db.commit()
 
-            # 启动导出任务（明确调用导出任务方法）
+            # 全局并发控制：立即执行或排队
             print(f"🔄 重新启动导出任务: {task_id[:8]}, image={task.image}:{task.tag}")
-            thread = threading.Thread(
-                target=self._export_task,
-                args=(task_id,),
-                daemon=True,
+            queue_manager = GlobalTaskQueueManager()
+            started = queue_manager.start_if_slot_available(
+                lambda: self.start_pending_task(task_id)
             )
-            thread.start()
+            if not started:
+                print(f"⏳ 重试导出任务进入全局队列等待: task_id={task_id[:8]}")
 
             print(f"✅ 导出任务 {task_id[:8]} 已重新启动")
             return True
@@ -6540,6 +6669,34 @@ class ExportTaskManager:
             raise
         finally:
             db.close()
+
+    def start_pending_task(self, task_id: str) -> bool:
+        """启动一个已存在的 pending 导出任务。"""
+        from backend.database import get_db_session
+        from backend.models import ExportTask
+
+        db = get_db_session()
+        try:
+            task = db.query(ExportTask).filter(ExportTask.task_id == task_id).first()
+            if not task:
+                return False
+            if task.status != "pending":
+                return False
+            task.status = "running"
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        thread = threading.Thread(
+            target=self._export_task,
+            args=(task_id,),
+            daemon=True,
+        )
+        thread.start()
+        return True
 
     def delete_task(self, task_id: str) -> bool:
         """删除任务及其文件（只有停止、完成或失败的任务才能删除）"""

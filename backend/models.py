@@ -489,3 +489,14 @@ class DeployConfig(Base):
         Index("idx_deploy_config_webhook_token", "webhook_token"),
         Index("idx_deploy_config_created", "created_at"),
     )
+
+
+class SystemSetting(Base):
+    """系统设置表（键值对）"""
+
+    __tablename__ = "system_settings"
+
+    setting_key = Column(String(100), primary_key=True)
+    setting_value = Column(String(255), nullable=False)
+    description = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
