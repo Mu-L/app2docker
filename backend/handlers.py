@@ -5022,6 +5022,25 @@ class BuildTaskManager:
             if task.task_type == "build_from_source":
                 build_manager = BuildManager()
                 task_config = task.task_config or {}
+                pipeline_id = task.pipeline_id or task_config.get("pipeline_id")
+                if pipeline_id:
+                    try:
+                        from backend.pipeline_manager import PipelineManager
+
+                        pipeline_manager = PipelineManager()
+                        pipeline_manager.record_trigger(
+                            pipeline_id,
+                            task_id,
+                            trigger_source=task.trigger_source or "manual",
+                            trigger_info={
+                                "from_queue": True,
+                                "branch": task.branch or task_config.get("branch"),
+                            },
+                        )
+                    except Exception as bind_error:
+                        print(
+                            f"⚠️ 启动排队任务时绑定流水线失败: task_id={task_id[:8]}, error={bind_error}"
+                        )
                 build_manager._start_build_from_source_thread(task_id, task_config)
                 return True
 
@@ -5092,9 +5111,22 @@ class BuildTaskManager:
 
                     pipeline_manager = PipelineManager()
                     pipeline_id = pipeline_manager.find_pipeline_by_task(task_id)
+                    # 兜底：当任务是由全局队列直接拉起时，可能未通过 current_task_id 绑定
+                    if not pipeline_id:
+                        task_config = task.task_config or {}
+                        pipeline_id = task.pipeline_id or task_config.get("pipeline_id")
+                        if pipeline_id:
+                            print(
+                                f"ℹ️ 通过任务配置回溯到流水线: task_id={task_id[:8]}, pipeline_id={pipeline_id[:8]}"
+                            )
 
                     if pipeline_id:
-                        pipeline_manager.unbind_task(pipeline_id)
+                        # 仅当当前绑定任务就是自己时才解绑，避免误清除后续任务绑定
+                        current_task_id = pipeline_manager.get_pipeline_running_task(
+                            pipeline_id
+                        )
+                        if current_task_id == task_id:
+                            pipeline_manager.unbind_task(pipeline_id)
                         print(
                             f"✅ 任务 {task_id[:8]} 已结束，解绑流水线 {pipeline_id[:8]}, 状态={status}"
                         )
