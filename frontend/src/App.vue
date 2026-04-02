@@ -28,23 +28,27 @@
 
           <div class="ms-auto flex shrink-0 items-center gap-2">
             <!-- 运行任务：下拉菜单 -->
-            <div v-if="runningTasksCount > 0" class="dropdown">
+            <div
+              v-if="runningTasksCount > 0"
+              ref="runningTasksDropdownWrap"
+              class="dropdown position-relative"
+            >
               <button
-                ref="runningTasksDropdownBtn"
-                id="adminRunningTasksDropdown"
                 class="inline-flex items-center rounded-lg bg-amber-100 px-2 py-1 text-sm text-amber-900 hover:bg-amber-200 dropdown-toggle"
                 type="button"
-                data-bs-toggle="dropdown"
-                data-bs-auto-close="outside"
-                aria-expanded="false"
+                :aria-expanded="runningTasksMenuOpen ? 'true' : 'false'"
+                @click.stop="toggleRunningTasksMenu"
               >
                 <i class="fas fa-spinner fa-spin"></i>
                 <span class="ms-1 hidden md:inline">运行任务</span>
                 <span class="ms-1 rounded bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">{{ runningTasksCount }}</span>
               </button>
               <div
+                ref="runningTasksDropdownMenu"
                 class="dropdown-menu dropdown-menu-end admin-running-dropdown rounded-lg border border-gray-200 p-0 shadow-lg"
-                aria-labelledby="adminRunningTasksDropdown"
+                :class="{ show: runningTasksMenuOpen }"
+                :style="runningTasksMenuStyle"
+                @click.stop
                 style="min-width: 300px; max-width: 400px"
               >
                 <div
@@ -111,14 +115,12 @@
             </button>
 
             <!-- 用户菜单 -->
-            <div class="dropdown">
+            <div ref="userDropdownWrap" class="dropdown position-relative">
               <button
-                ref="userDropdownBtn"
-                id="adminUserDropdown"
                 class="inline-flex items-center rounded-lg border border-gray-300 px-2 py-1 text-sm text-gray-700 hover:bg-gray-50 dropdown-toggle"
                 type="button"
-                data-bs-toggle="dropdown"
-                aria-expanded="false"
+                :aria-expanded="userMenuOpen ? 'true' : 'false'"
+                @click.stop="toggleUserMenu"
               >
                 <i class="fas fa-user-circle"></i>
                 <span class="ms-1 hidden max-w-32 truncate md:inline">{{
@@ -126,8 +128,10 @@
                 }}</span>
               </button>
               <ul
+                ref="userDropdownMenu"
                 class="dropdown-menu dropdown-menu-end rounded-lg border border-gray-200 py-1 shadow-lg"
-                aria-labelledby="adminUserDropdown"
+                :class="{ show: userMenuOpen }"
+                @click="closeUserMenu"
               >
                 <li>
                   <button
@@ -786,14 +790,17 @@ const showUserCenter = ref(false);
 const userCenterInitialTab = ref("password");
 const runningTasksCount = ref(0);
 const runningTasksList = ref([]);
-const runningTasksDropdownBtn = ref(null);
-const userDropdownBtn = ref(null);
+const runningTasksDropdownWrap = ref(null);
+const runningTasksDropdownMenu = ref(null);
+const userDropdownWrap = ref(null);
+const userDropdownMenu = ref(null);
+const runningTasksMenuOpen = ref(false);
+const userMenuOpen = ref(false);
+const runningTasksMenuStyle = ref({});
 const buildConfigToEdit = ref({});
 const permissionsLoaded = ref(false);
 const userPermissions = ref(new Set());
 let runningTasksTimer = null;
-let runningTasksDropdownInstance = null;
-let userDropdownInstance = null;
 
 const sidebarCollapsed = ref(
   typeof localStorage !== "undefined" &&
@@ -1008,31 +1015,68 @@ function openUserCenter(tab = "password") {
   showUserCenter.value = true;
 }
 
-function initTopbarDropdowns() {
-  if (userDropdownBtn.value) {
-    if (userDropdownInstance) {
-      userDropdownInstance.dispose();
-    }
-    userDropdownInstance = new Dropdown(userDropdownBtn.value);
+function adjustRunningTasksMenuPosition() {
+  const menu = runningTasksDropdownMenu.value;
+  if (!menu) return;
+  const gap = 8;
+  const rect = menu.getBoundingClientRect();
+  const style = {};
+  if (rect.right > window.innerWidth - gap) {
+    style.right = "0";
+    style.left = "auto";
   }
-  if (runningTasksDropdownBtn.value) {
-    if (runningTasksDropdownInstance) {
-      runningTasksDropdownInstance.dispose();
-    }
-    runningTasksDropdownInstance = new Dropdown(runningTasksDropdownBtn.value);
+  if (rect.left < gap) {
+    style.left = "0";
+    style.right = "auto";
+  }
+  if (rect.bottom > window.innerHeight - gap) {
+    style.top = "100%";
+    style.bottom = "auto";
+    style.maxHeight = "60vh";
+    style.overflowY = "auto";
+  }
+  runningTasksMenuStyle.value = style;
+}
+
+function closeRunningTasksMenu() {
+  runningTasksMenuOpen.value = false;
+}
+
+function closeUserMenu() {
+  userMenuOpen.value = false;
+}
+
+function closeTopbarMenus() {
+  closeRunningTasksMenu();
+  closeUserMenu();
+}
+
+function handleTopbarOutsideClick(event) {
+  const inRunning = runningTasksDropdownWrap.value?.contains(event.target);
+  const inUser = userDropdownWrap.value?.contains(event.target);
+  if (!inRunning) closeRunningTasksMenu();
+  if (!inUser) closeUserMenu();
+}
+
+function toggleRunningTasksMenu() {
+  runningTasksMenuOpen.value = !runningTasksMenuOpen.value;
+  if (runningTasksMenuOpen.value) {
+    closeUserMenu();
+    nextTick(() => {
+      adjustRunningTasksMenuPosition();
+    });
   }
 }
 
-function hideRunningTasksDropdown() {
-  const el = document.getElementById("adminRunningTasksDropdown");
-  if (el) {
-    const inst = Dropdown.getInstance(el) || Dropdown.getOrCreateInstance(el);
-    inst.hide();
+function toggleUserMenu() {
+  userMenuOpen.value = !userMenuOpen.value;
+  if (userMenuOpen.value) {
+    closeRunningTasksMenu();
   }
 }
 
 function goToRunningTasks() {
-  hideRunningTasksDropdown();
+  closeRunningTasksMenu();
   handleNavigate("tasks", { status: "running" });
 }
 
@@ -1094,9 +1138,6 @@ async function handleLoginSuccess(data) {
   authenticated.value = true;
   username.value = data.username;
   console.log("✅ 登录成功:", data.username);
-  await nextTick();
-  initTopbarDropdowns();
-
   try {
     const permissions = await getUserPermissions();
     userPermissions.value = permissions;
@@ -1174,8 +1215,8 @@ onMounted(async () => {
   }
 
   window.addEventListener("navigate", handleNavigateEvent);
-  await nextTick();
-  initTopbarDropdowns();
+  document.addEventListener("click", handleTopbarOutsideClick);
+  window.addEventListener("resize", adjustRunningTasksMenuPosition);
 });
 
 function handleNavigateEvent(e) {
@@ -1187,25 +1228,20 @@ function handleNavigateEvent(e) {
 onUnmounted(() => {
   stopRunningTasksTimer();
   window.removeEventListener("navigate", handleNavigateEvent);
-  if (runningTasksDropdownInstance) {
-    runningTasksDropdownInstance.dispose();
-    runningTasksDropdownInstance = null;
-  }
-  if (userDropdownInstance) {
-    userDropdownInstance.dispose();
-    userDropdownInstance = null;
+  document.removeEventListener("click", handleTopbarOutsideClick);
+  window.removeEventListener("resize", adjustRunningTasksMenuPosition);
+});
+
+watch(runningTasksCount, () => {
+  if (!runningTasksCount.value) {
+    closeRunningTasksMenu();
   }
 });
 
-watch(runningTasksCount, async () => {
-  await nextTick();
-  initTopbarDropdowns();
-});
-
-watch(authenticated, async (val) => {
-  if (!val) return;
-  await nextTick();
-  initTopbarDropdowns();
+watch(authenticated, (val) => {
+  if (!val) {
+    closeTopbarMenus();
+  }
 });
 </script>
 

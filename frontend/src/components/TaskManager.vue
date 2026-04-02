@@ -273,7 +273,7 @@
         </button>
         <button
           class="btn btn-sm btn-outline-warning"
-          @click="updateMaxConcurrentTasks"
+          @click="openConcurrentModal"
           :disabled="savingSystemSettings"
           title="修改全局最大并发任务数"
         >
@@ -1070,6 +1070,66 @@
     </div>
   </div>
   <div v-if="showSaveAsPipelineModal" class="modal-backdrop fade show"></div>
+
+  <!-- 并发设置弹窗 -->
+  <div
+    v-if="showConcurrentModal"
+    class="modal fade show"
+    style="display: block"
+    tabindex="-1"
+  >
+    <div class="modal-dialog modal-sm">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-sliders-h me-1"></i>并发设置</h5>
+          <button
+            type="button"
+            class="btn-close"
+            :disabled="savingSystemSettings"
+            @click="closeConcurrentModal"
+          ></button>
+        </div>
+        <div class="modal-body">
+          <label class="form-label mb-2">全局最大并发任务数</label>
+          <input
+            v-model.trim="concurrentInput"
+            type="number"
+            min="1"
+            step="1"
+            class="form-control"
+            :disabled="savingSystemSettings"
+            @keydown.enter="submitConcurrentSetting"
+          />
+          <small class="text-muted d-block mt-2"
+            >当前值：{{ maxConcurrentTasks }}</small
+          >
+        </div>
+        <div class="modal-footer">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="savingSystemSettings"
+            @click="closeConcurrentModal"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="savingSystemSettings"
+            @click="submitConcurrentSetting"
+          >
+            <span
+              v-if="savingSystemSettings"
+              class="spinner-border spinner-border-sm me-1"
+            ></span>
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div v-if="showConcurrentModal" class="modal-backdrop fade show"></div>
 </template>
 
 <script setup>
@@ -1116,6 +1176,8 @@ const maxConcurrentTasks = ref(15);
 const queueRunningCount = ref(0);
 const queuePendingCount = ref(0);
 const savingSystemSettings = ref(false);
+const showConcurrentModal = ref(false);
+const concurrentInput = ref("");
 
 // CodeMirror 扩展配置（JSON模式，使用JavaScript模式）
 const jsonEditorExtensions = [StreamLanguage.define(javascript), oneDark];
@@ -1476,14 +1538,19 @@ async function loadSystemQueueSettings() {
   }
 }
 
-async function updateMaxConcurrentTasks() {
+function openConcurrentModal() {
+  concurrentInput.value = String(maxConcurrentTasks.value || 15);
+  showConcurrentModal.value = true;
+}
+
+function closeConcurrentModal() {
   if (savingSystemSettings.value) return;
-  const input = prompt(
-    `请输入全局最大并发任务数（当前 ${maxConcurrentTasks.value}）：`,
-    String(maxConcurrentTasks.value)
-  );
-  if (!input) return;
-  const value = Number(input);
+  showConcurrentModal.value = false;
+}
+
+async function submitConcurrentSetting() {
+  if (savingSystemSettings.value) return;
+  const value = Number(concurrentInput.value);
   if (!Number.isInteger(value) || value < 1) {
     alert("请输入大于等于 1 的整数");
     return;
@@ -1493,6 +1560,7 @@ async function updateMaxConcurrentTasks() {
     await axios.put("/api/system-settings", { max_concurrent_tasks: value });
     await loadSystemQueueSettings();
     await loadTasks(false);
+    showConcurrentModal.value = false;
   } catch (err) {
     const errorMsg =
       err.response?.data?.detail || err.message || "更新系统设置失败";
