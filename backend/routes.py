@@ -1559,10 +1559,13 @@ async def api_get_system_version(request: Request):
 
 
 @router.get("/system/version/check-update")
-async def api_check_system_version_update(request: Request):
+async def api_check_system_version_update(
+    request: Request,
+    force: bool = Query(False, description="跳过服务端缓存，直接请求 Gitee"),
+):
     """检查 Gitee Releases 是否有新版本。"""
     require_auth(request)
-    update_info = check_gitee_update()
+    update_info = check_gitee_update(force_refresh=force)
     return JSONResponse(
         {
             "success": update_info.get("success", False),

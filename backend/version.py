@@ -3,12 +3,16 @@
 
 - 当前版本：backend/VERSION（单行语义化版本号）
 - 远端：Gitee API v5 releases 列表，取 tag/name 中语义版本最大的一条
+- 进程内缓存：环境变量 GITEE_UPDATE_CACHE_SECONDS（默认 600，≤0 表示关闭缓存）
 """
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -23,6 +27,17 @@ GITEE_RELEASES_LIST_API = (
     f"https://gitee.com/api/v5/repos/{GITEE_OWNER}/{GITEE_REPO}/releases"
     "?per_page=30&page=1"
 )
+
+_release_cache: dict | None = None
+_release_cache_at: float = 0.0
+
+
+def _gitee_release_cache_ttl_seconds() -> float:
+    raw = os.environ.get("GITEE_UPDATE_CACHE_SECONDS", "600")
+    try:
+        return float(raw)
+    except ValueError:
+        return 600.0
 
 
 def _version_file_path() -> Path:
@@ -108,8 +123,19 @@ def _pick_highest_semver_release(releases: list) -> dict:
     return best
 
 
-def fetch_latest_gitee_release() -> dict:
-    """获取 Gitee 上语义版本号最大的 Release。"""
+def fetch_latest_gitee_release(force_refresh: bool = False) -> dict:
+    """获取 Gitee 上语义版本号最大的 Release（带短时缓存，减轻对 Gitee 的请求压力）。"""
+    global _release_cache, _release_cache_at
+    ttl = _gitee_release_cache_ttl_seconds()
+    now = time.monotonic()
+    if (
+        ttl > 0
+        and not force_refresh
+        and _release_cache is not None
+        and (now - _release_cache_at) < ttl
+    ):
+        return copy.deepcopy(_release_cache)
+
     request = Request(
         GITEE_RELEASES_LIST_API,
         headers={"User-Agent": "app2docker-version-checker"},
@@ -117,11 +143,16 @@ def fetch_latest_gitee_release() -> dict:
     with urlopen(request, timeout=8) as response:
         payload = json.loads(response.read().decode("utf-8"))
         if isinstance(payload, list) and payload:
-            return _pick_highest_semver_release(payload)
-    return {}
+            release = _pick_highest_semver_release(payload)
+        else:
+            release = {}
+    if ttl > 0:
+        _release_cache = copy.deepcopy(release)
+        _release_cache_at = now
+    return copy.deepcopy(release)
 
 
-def check_gitee_update() -> dict:
+def check_gitee_update(force_refresh: bool = False) -> dict:
     """
     检查是否有新版本。
 
@@ -142,7 +173,7 @@ def check_gitee_update() -> dict:
     }
 
     try:
-        release = fetch_latest_gitee_release()
+        release = fetch_latest_gitee_release(force_refresh=force_refresh)
         tag_name = release.get("tag_name") or release.get("name") or ""
         latest_version = normalize_version(tag_name)
         # Gitee OpenAPI 的 release 条目通常不含 html_url，需按标签拼接发行页

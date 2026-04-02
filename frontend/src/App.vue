@@ -672,11 +672,14 @@ function showUpdateToastOnce(resData) {
   toast.show();
 }
 
-async function loadUpdateCheck(options = { showLoading: false }) {
+async function loadUpdateCheck(options = {}) {
+  const { showLoading = false, force = false } = options;
   if (!authenticated.value) return;
-  if (options.showLoading) checkLoading.value = true;
+  if (showLoading) checkLoading.value = true;
   try {
-    const res = await axios.get("/api/system/version/check-update");
+    const res = await axios.get("/api/system/version/check-update", {
+      params: force ? { force: true } : undefined,
+    });
     const d = res.data || {};
     updateStatus.value = {
       hasUpdate: !!d.has_update,
@@ -704,7 +707,7 @@ async function loadUpdateCheck(options = { showLoading: false }) {
       checkMessage: typeof detail === "string" ? detail : "检查更新失败",
     };
   } finally {
-    if (options.showLoading) checkLoading.value = false;
+    if (showLoading) checkLoading.value = false;
   }
 }
 
@@ -717,7 +720,7 @@ function openVersionModal() {
 }
 
 function refreshVersionCheck() {
-  loadUpdateCheck({ showLoading: true });
+  loadUpdateCheck({ showLoading: true, force: true });
 }
 
 function openReleaseUrl() {
