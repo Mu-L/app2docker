@@ -190,6 +190,22 @@
       <!-- 侧边栏（二级菜单） -->
       <aside class="admin-sidebar" aria-label="主导航">
         <nav v-if="!sidebarCollapsed" class="admin-sidebar-nav">
+          <button
+            v-if="hasPermission('menu.dashboard')"
+            type="button"
+            class="admin-sidebar-home"
+            :class="{ active: activeTab === 'dashboard' }"
+            title="首页"
+            @click="activeTab = 'dashboard'"
+          >
+            <i class="fas fa-house fa-fw"></i>
+            <span class="admin-sidebar-label">首页</span>
+          </button>
+          <div
+            v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
+            class="admin-sidebar-divider"
+            role="separator"
+          />
           <div
             v-for="group in visibleSidebarGroups"
             :key="group.id"
@@ -244,6 +260,21 @@
           class="admin-sidebar-nav admin-sidebar-nav--collapsed"
           aria-label="主导航"
         >
+          <button
+            v-if="hasPermission('menu.dashboard')"
+            type="button"
+            class="admin-sidebar-flyout-trigger admin-sidebar-flyout-trigger--home"
+            :class="{ 'admin-sidebar-flyout-trigger--active': activeTab === 'dashboard' }"
+            title="首页"
+            @click="activeTab = 'dashboard'"
+          >
+            <i class="fas fa-house fa-fw"></i>
+          </button>
+          <div
+            v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
+            class="admin-sidebar-divider admin-sidebar-divider--collapsed"
+            role="separator"
+          />
           <div
             v-for="group in visibleSidebarGroups"
             :key="'fly-' + group.id"
@@ -573,21 +604,8 @@ import UserCenterModal from "./components/UserCenterModal.vue";
 import UserManagement from "./components/UserManagement.vue";
 import { clearPermissionsCache, getUserPermissions } from "./utils/permissions";
 
-/** 侧边栏二级分组（一级：分组，二级：原菜单项，权限与 tab id 不变） */
+/** 侧边栏二级分组（仪表盘单独「首页」一级入口，其余为分组 + 二级菜单） */
 const SIDEBAR_GROUPS = [
-  {
-    id: "overview",
-    label: "总览",
-    icon: "fa-house",
-    children: [
-      {
-        id: "dashboard",
-        perm: "menu.dashboard",
-        label: "仪表盘",
-        icon: "fa-chart-line",
-      },
-    ],
-  },
   {
     id: "cicd",
     label: "构建与交付",
@@ -1155,6 +1173,53 @@ onUnmounted(() => {
   gap: 0.05rem;
 }
 
+/* 首页：单级入口（对应仪表盘） */
+.admin-sidebar-home {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem 0.55rem 0.65rem;
+  border: none;
+  background: transparent;
+  color: #334155;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  border-radius: 0 0.25rem 0.25rem 0;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.admin-sidebar-home:hover {
+  background: rgba(59, 130, 246, 0.08);
+  color: #1e40af;
+}
+
+.admin-sidebar-home.active {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+  border-left-color: #2563eb;
+}
+
+.admin-sidebar-divider {
+  height: 1px;
+  margin: 0.35rem 0.75rem 0.45rem 0.65rem;
+  background: #e2e8f0;
+}
+
+.admin-sidebar-divider--collapsed {
+  width: 1.5rem;
+  height: 1px;
+  margin: 0.25rem auto 0.35rem;
+  align-self: center;
+}
+
 .admin-sidebar-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1280,6 +1345,11 @@ onUnmounted(() => {
 .admin-sidebar-flyout-trigger:hover,
 .admin-sidebar-flyout-trigger:focus {
   background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+}
+
+.admin-sidebar-flyout-trigger--active {
+  background: rgba(59, 130, 246, 0.15);
   color: #1d4ed8;
 }
 

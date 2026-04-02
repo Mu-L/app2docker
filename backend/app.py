@@ -564,8 +564,7 @@ async def startup_event():
                 )
                 print(f"   提示: 连接可能在后台建立中，请稍候...")
 
-            # 部署任务恢复依赖 Agent WebSocket（含本地 Agent），放到后台执行，不阻塞启动
-            asyncio.create_task(_background_recover_deploy_tasks())
+            # 部署任务恢复将在外层统一调度，不在此处重复
 
         except Exception as e:
             print(f"⚠️ 启动本地 Agent WebSocket 客户端失败: {e}")
@@ -608,6 +607,9 @@ async def startup_event():
         import traceback
 
         traceback.print_exc()
+
+    # 无论本地 Agent 是否连接成功，都在后台执行部署任务恢复
+    asyncio.create_task(_background_recover_deploy_tasks())
 
     print("\n" + "=" * 60)
     print("🚀 App2Docker 服务已启动")
