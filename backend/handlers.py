@@ -6293,10 +6293,24 @@ async def recover_non_deploy_tasks_after_restart() -> None:
 
 
 async def recover_deploy_tasks_after_restart() -> None:
-    """部署任务需 Agent（含本地 Agent）WebSocket 就绪后再检查。"""
+    """部署任务需 Agent（含本地 Agent）WebSocket 就绪后再检查。
+
+    服务重启后远端部署目标（如 Portainer）可能尚未完全就绪，
+    因此对"未找到 Stack/容器"等可恢复结果进行延迟重试。
+    """
+    import asyncio as _aio
+
     from backend.database import get_db_session
     from backend.models import Task
     from backend.deploy_task_manager import DeployTaskManager
+
+    RECOVER_MAX_RETRIES = 5
+    RECOVER_RETRY_INTERVAL = 10  # 秒
+    _RECOVERABLE_KEYWORDS = ("未找到", "离线", "无法连接", "ConnectionError", "timeout")
+
+    def _is_recoverable(result: dict) -> bool:
+        msg = (result.get("message") or "").lower()
+        return any(kw.lower() in msg for kw in _RECOVERABLE_KEYWORDS)
 
     deploy_mgr = DeployTaskManager()
     btm = BuildTaskManager()
@@ -6329,23 +6343,50 @@ async def recover_deploy_tasks_after_restart() -> None:
                         tid, "failed", error="服务重启：无部署目标可校验"
                     )
                     continue
-                results: List[Tuple[str, dict]] = []
+
+                # 对每个目标进行带重试的检查
+                target_results: List[Tuple[str, dict]] = []
                 for target in targets:
+                    tname = target.get("name") or "?"
                     r = await deploy_mgr.check_deploy_recovery_for_target(
                         tid, task_config, target
                     )
-                    results.append((target.get("name") or "?", r))
+                    if _is_recoverable(r):
+                        btm.add_log(
+                            tid,
+                            f"  · 目标 {tname}: ⏳ {r.get('message', '')}，"
+                            f"将在 {RECOVER_RETRY_INTERVAL}s 后重试（最多 {RECOVER_MAX_RETRIES} 次）…\n",
+                        )
+                        for attempt in range(1, RECOVER_MAX_RETRIES + 1):
+                            await _aio.sleep(RECOVER_RETRY_INTERVAL)
+                            r = await deploy_mgr.check_deploy_recovery_for_target(
+                                tid, task_config, target
+                            )
+                            if not _is_recoverable(r):
+                                break
+                            btm.add_log(
+                                tid,
+                                f"  · 目标 {tname}: ⏳ 第 {attempt + 1}/{RECOVER_MAX_RETRIES} 次重试 "
+                                f"— {r.get('message', '')}\n",
+                            )
+                        else:
+                            btm.add_log(
+                                tid,
+                                f"  · 目标 {tname}: ⚠️ 重试 {RECOVER_MAX_RETRIES} 次后仍未就绪\n",
+                            )
+                    target_results.append((tname, r))
                     btm.add_log(
                         tid,
-                        f"  · 目标 {target.get('name')}: "
+                        f"  · 目标 {tname}: "
                         f"{'✅' if r.get('success') else '❌'} {r.get('message', '')}\n",
                     )
-                all_ok = all(r.get("success") for _, r in results)
+
+                all_ok = all(r.get("success") for _, r in target_results)
                 if all_ok:
                     btm.update_task_status(tid, "completed")
                 else:
                     msg = "; ".join(
-                        f"{n}:{r.get('message', '')}" for n, r in results
+                        f"{n}:{r.get('message', '')}" for n, r in target_results
                     )
                     btm.update_task_status(tid, "failed", error=msg[:2000])
             except Exception as ex:
