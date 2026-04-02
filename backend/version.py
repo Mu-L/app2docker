@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 # 与仓库 Gitee Release 对应：gitee.com/numen06/app2docker
@@ -144,7 +145,17 @@ def check_gitee_update() -> dict:
         release = fetch_latest_gitee_release()
         tag_name = release.get("tag_name") or release.get("name") or ""
         latest_version = normalize_version(tag_name)
-        release_url = release.get("html_url")
+        # Gitee OpenAPI 的 release 条目通常不含 html_url，需按标签拼接发行页
+        raw_url = release.get("html_url")
+        if isinstance(raw_url, str) and raw_url.strip():
+            release_url = raw_url.strip()
+        elif tag_name.strip():
+            release_url = (
+                f"https://gitee.com/{GITEE_OWNER}/{GITEE_REPO}/releases/tag/"
+                f"{quote(tag_name.strip(), safe='')}"
+            )
+        else:
+            release_url = f"https://gitee.com/{GITEE_OWNER}/{GITEE_REPO}/releases"
         release_name = release.get("name") or tag_name
         raw_body = release.get("body")
         if isinstance(raw_body, str) and raw_body.strip():

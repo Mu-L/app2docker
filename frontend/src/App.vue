@@ -373,19 +373,32 @@
         </div>
       </div>
 
-      <!-- 版本与更新（底部，与标题区按钮呼应） -->
-      <div class="text-center text-muted small mt-2 mb-2 px-2">
-        <span class="me-1">当前版本</span>
-        <strong class="text-body">v{{ appVersion || "…" }}</strong>
-        <span class="mx-1">·</span>
-        <button
-          type="button"
-          class="btn btn-link btn-sm text-muted p-0 text-decoration-none align-baseline"
-          @click="openVersionModal"
-        >
-          检查更新与发行说明
-        </button>
-      </div>
+      <!-- 页脚：版本 + Gitee 仓库 -->
+      <footer class="text-center text-muted small mt-2 mb-3 px-2">
+        <div>
+          <span class="me-1">当前版本</span>
+          <strong class="text-body">v{{ appVersion || "…" }}</strong>
+          <span class="mx-1">·</span>
+          <button
+            type="button"
+            class="btn btn-link btn-sm text-muted p-0 text-decoration-none align-baseline"
+            @click="openVersionModal"
+          >
+            检查更新与发行说明
+          </button>
+        </div>
+        <div class="mt-2">
+          <i class="fas fa-code-branch me-1 opacity-75"></i>
+          <span class="me-1">Gitee</span>
+          <a
+            :href="GITEE_REPO_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="link-secondary text-break"
+            >{{ GITEE_REPO_URL }}</a
+          >
+        </div>
+      </footer>
 
       <!-- 版本与更新对话框 -->
       <div
@@ -501,7 +514,7 @@
               <button
                 type="button"
                 class="btn btn-primary btn-sm"
-                :disabled="!updateStatus.releaseUrl"
+                :disabled="checkLoading"
                 @click="openReleaseUrl"
               >
                 在 Gitee 查看
@@ -592,6 +605,9 @@ const buildConfigToEdit = ref({});
 const permissionsLoaded = ref(false);
 const userPermissions = ref(new Set()); // 响应式的权限集合
 let runningTasksTimer = null;
+
+/** 与 backend/version.py、更新检查一致的仓库地址 */
+const GITEE_REPO_URL = "https://gitee.com/numen06/app2docker";
 
 /** 版本与更新检查 */
 const appVersion = ref("");
@@ -705,13 +721,10 @@ function refreshVersionCheck() {
 }
 
 function openReleaseUrl() {
-  if (updateStatus.value.releaseUrl) {
-    window.open(
-      updateStatus.value.releaseUrl,
-      "_blank",
-      "noopener,noreferrer",
-    );
-  }
+  const url =
+    updateStatus.value.releaseUrl ||
+    `${GITEE_REPO_URL}/releases`;
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 // 权限检查函数（响应式）

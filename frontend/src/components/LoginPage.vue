@@ -78,6 +78,17 @@
             <i class="fas fa-code-branch"></i>
             当前版本 <strong class="text-secondary">v{{ appVersion }}</strong>
           </div>
+          <div class="mt-2 pt-2 border-top">
+            <i class="fas fa-external-link-alt me-1"></i>
+            <a
+              :href="GITEE_REPO_URL"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link-secondary text-break d-inline-block"
+              style="max-width: 100%"
+              >{{ GITEE_REPO_URL }}</a
+            >
+          </div>
         </div>
       </div>
     </div>
@@ -99,6 +110,8 @@ import { onMounted, ref } from 'vue'
 import UserCenterModal from './UserCenterModal.vue'
 
 const emit = defineEmits(['login-success'])
+
+const GITEE_REPO_URL = 'https://gitee.com/numen06/app2docker'
 
 const appVersion = ref('')
 
