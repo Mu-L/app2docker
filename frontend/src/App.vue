@@ -9,27 +9,26 @@
     >
       <!-- 顶部导航 -->
       <nav
-        class="admin-navbar navbar navbar-dark fixed-top border-bottom border-secondary border-opacity-25"
-        style="background-color: var(--admin-navbar-bg, #1e293b)"
+        class="admin-navbar navbar navbar-light fixed-top border-bottom bg-white"
       >
         <div class="container-fluid px-2 px-sm-3 d-flex flex-wrap align-items-center gap-2">
           <div class="d-flex align-items-center gap-1 gap-sm-2 flex-shrink-0">
             <button
               type="button"
-              class="btn btn-link text-white p-2 admin-navbar-icon-btn"
+              class="btn btn-link text-body p-2 admin-navbar-icon-btn"
               title="展开/收起侧边栏"
               aria-label="展开或收起侧边栏"
               @click="toggleSidebar"
             >
               <i class="fas fa-bars"></i>
             </button>
-            <span class="navbar-brand mb-0 d-flex align-items-center gap-2 text-white fw-semibold">
-              <i class="fas fa-box-open text-info"></i>
+            <span class="navbar-brand mb-0 d-flex align-items-center gap-2 text-dark fw-semibold">
+              <i class="fas fa-box-open text-primary"></i>
               <span class="d-none d-sm-inline">App2Docker</span>
             </span>
             <button
               type="button"
-              class="btn btn-outline-light btn-sm py-0 px-2"
+              class="btn btn-outline-secondary btn-sm py-0 px-2"
               title="版本与更新"
               @click="openVersionModal"
             >
@@ -118,7 +117,7 @@
             <button
               v-else
               type="button"
-              class="btn btn-outline-light btn-sm"
+              class="btn btn-outline-secondary btn-sm"
               title="暂无运行中的任务"
               disabled
             >
@@ -131,7 +130,7 @@
             <div class="dropdown">
               <button
                 id="adminUserDropdown"
-                class="btn btn-outline-light btn-sm dropdown-toggle"
+                class="btn btn-outline-secondary btn-sm dropdown-toggle"
                 type="button"
                 data-bs-toggle="dropdown"
                 aria-expanded="false"
@@ -210,13 +209,10 @@
       <div class="admin-main-wrap">
         <main class="admin-main">
           <header class="admin-page-header">
-            <h1 class="admin-page-title h4 mb-1">{{ pageTitle }}</h1>
-            <p v-if="pageDescription" class="admin-page-desc text-muted small mb-0">
-              {{ pageDescription }}
-            </p>
+            <h1 class="admin-page-title h4 mb-0">{{ pageTitle }}</h1>
           </header>
 
-          <div class="admin-content-surface rounded-3 shadow-sm border bg-white p-3 p-md-4">
+          <div class="admin-page-body">
             <DashboardPanel
               v-if="
                 activeTab === 'dashboard' && hasPermission('menu.dashboard')
@@ -523,23 +519,23 @@ const SIDEBAR_ITEMS = [
   { id: "logs", perm: null, label: "操作日志", icon: "fa-history" },
 ];
 
-const PAGE_META = {
-  dashboard: { title: "仪表盘", desc: "总览与快捷入口" },
-  "step-build": { title: "镜像构建", desc: "上传应用，构建并推送 Docker 镜像" },
-  export: { title: "导出镜像", desc: "导出镜像为离线包" },
-  tasks: { title: "任务管理", desc: "查看与管理构建、导出、部署任务" },
-  pipeline: { title: "流水线", desc: "流水线编排与配置" },
-  datasource: { title: "数据源", desc: "管理代码与构建数据源" },
-  registry: { title: "镜像仓库", desc: "镜像仓库配置与镜像列表" },
-  template: { title: "模板管理", desc: "Dockerfile 与构建模板" },
-  "resource-package": { title: "资源包", desc: "资源包管理" },
-  host: { title: "主机管理", desc: "构建与部署目标主机" },
-  docker: { title: "Docker 管理", desc: "容器与镜像运维" },
-  deploy: { title: "部署管理", desc: "部署任务与目标环境" },
-  users: { title: "用户管理", desc: "系统用户与权限" },
-  roles: { title: "角色管理", desc: "角色与权限配置" },
-  logs: { title: "操作日志", desc: "审计与操作记录" },
-  "build-config-editor": { title: "构建配置", desc: "编辑流水线构建配置" },
+const PAGE_TITLES = {
+  dashboard: "仪表盘",
+  "step-build": "镜像构建",
+  export: "导出镜像",
+  tasks: "任务管理",
+  pipeline: "流水线",
+  datasource: "数据源",
+  registry: "镜像仓库",
+  template: "模板管理",
+  "resource-package": "资源包",
+  host: "主机管理",
+  docker: "Docker 管理",
+  deploy: "部署管理",
+  users: "用户管理",
+  roles: "角色管理",
+  logs: "操作日志",
+  "build-config-editor": "构建配置",
 };
 
 const SIDEBAR_STORAGE_KEY = "app2docker-admin-sidebar-collapsed";
@@ -578,13 +574,7 @@ const visibleSidebarItems = computed(() =>
 );
 
 const pageTitle = computed(() => {
-  const m = PAGE_META[activeTab.value];
-  return m?.title || "App2Docker";
-});
-
-const pageDescription = computed(() => {
-  const m = PAGE_META[activeTab.value];
-  return m?.desc || "";
+  return PAGE_TITLES[activeTab.value] || "App2Docker";
 });
 
 const GITEE_REPO_URL = "https://gitee.com/numen06/app2docker";
@@ -894,6 +884,7 @@ onUnmounted(() => {
 .admin-navbar {
   height: var(--admin-navbar-height, 56px);
   z-index: 1030;
+  background-color: var(--admin-navbar-bg, #ffffff) !important;
 }
 
 .admin-navbar-icon-btn {
@@ -903,7 +894,7 @@ onUnmounted(() => {
 }
 .admin-navbar-icon-btn:hover,
 .admin-navbar-icon-btn:focus {
-  color: #e2e8f0 !important;
+  color: #0d6efd !important;
 }
 
 .admin-sidebar {
@@ -1013,7 +1004,7 @@ onUnmounted(() => {
   color: #0f172a;
 }
 
-.admin-content-surface {
+.admin-page-body {
   min-height: 400px;
 }
 
@@ -1062,7 +1053,6 @@ onUnmounted(() => {
   font-size: 0.95rem;
 }
 
-.admin-content-surface > .card,
 .card {
   border: 1px solid rgba(0, 0, 0, 0.1);
   box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);

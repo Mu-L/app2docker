@@ -1,5 +1,5 @@
 <template>
-  <div class="login-page d-flex align-items-center justify-content-center min-vh-100 bg-light">
+  <div class="login-page d-flex align-items-center justify-content-center min-vh-100">
     <div class="login-container">
       <div class="card shadow-lg" style="width: 400px;">
         <div class="card-body p-4">
@@ -223,7 +223,7 @@ function handlePasswordChangeSuccess() {
 
 <style scoped>
 .login-page {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background-color: var(--admin-content-bg, #f1f5f9);
 }
 
 .login-container {
