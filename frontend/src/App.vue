@@ -187,8 +187,8 @@
         :class="sidebarCollapsed ? 'w-16' : 'w-64'"
         aria-label="主导航"
       >
-        <nav v-if="!sidebarCollapsed" class="flex h-full flex-col p-3">
-          <div class="space-y-2 overflow-y-auto">
+        <nav v-if="!sidebarCollapsed" class="flex h-full min-h-0 flex-col p-3">
+          <div class="flex-1 space-y-2 overflow-y-auto">
             <button
               v-if="hasPermission('menu.dashboard')"
               type="button"
@@ -253,7 +253,7 @@
               </div>
             </div>
           </div>
-          <div class="mt-3 border-t border-gray-200 pt-3">
+          <div class="mt-3 shrink-0 border-t border-gray-200 pt-3">
             <button
               type="button"
               class="relative inline-flex w-full items-center justify-center rounded-lg border border-gray-300 px-2 py-2 text-xs text-gray-700 transition hover:bg-gray-50"
@@ -273,7 +273,7 @@
         </nav>
         <nav
           v-else
-          class="flex h-full flex-col items-center gap-2 px-2 py-3"
+          class="flex h-full min-h-0 flex-col items-center gap-2 px-2 py-3"
           aria-label="主导航"
         >
           <div class="flex w-full flex-1 flex-col items-center gap-2">
@@ -328,7 +328,7 @@
               </ul>
             </div>
           </div>
-          <div class="relative w-full border-t border-gray-200 pt-3">
+          <div class="relative w-full shrink-0 border-t border-gray-200 pt-3">
             <button
               type="button"
               class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition hover:bg-gray-50"
