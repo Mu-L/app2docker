@@ -631,9 +631,27 @@ async def startup_event():
 
 
 async def _background_recover_deploy_tasks() -> None:
-    """后台执行部署任务恢复，不阻塞主程序启动。"""
-    # 等待服务完全就绪后再开始恢复
-    await asyncio.sleep(5)
+    """后台执行部署任务恢复，不阻塞主程序启动。
+
+    先等待本地 Agent WebSocket 连接建立（最多 30 秒），
+    再执行部署任务恢复检查。
+    """
+    from backend.websocket_handler import active_connections
+
+    # 等待本地 Agent WebSocket 连接建立（最多 30 秒）
+    max_wait = 30
+    interval = 2
+    waited = 0
+    while waited < max_wait and not active_connections:
+        print(f"⏳ 等待 Agent WebSocket 连接建立… ({waited}s/{max_wait}s)")
+        await asyncio.sleep(interval)
+        waited += interval
+
+    if active_connections:
+        print(f"✅ Agent WebSocket 已就绪（{len(active_connections)} 个连接），开始部署任务恢复")
+    else:
+        print(f"⚠️ 等待 {max_wait}s 后 Agent WebSocket 仍未连接，仍然尝试恢复部署任务")
+
     try:
         await recover_deploy_tasks_after_restart()
     except Exception as recover_err:
