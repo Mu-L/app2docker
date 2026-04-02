@@ -294,8 +294,10 @@
             ></span>
           </button>
           <ul
+            ref="cleanupDropdownMenu"
             class="dropdown-menu dropdown-menu-end"
             :class="{ show: cleanupMenuOpen }"
+            :style="cleanupMenuStyle"
             @click.stop
           >
             <li>
@@ -1120,7 +1122,9 @@ const jsonEditorExtensions = [StreamLanguage.define(javascript), oneDark];
 
 const showSaveAsPipelineModal = ref(false); // 另存为流水线模态框
 const cleanupDropdownWrap = ref(null);
+const cleanupDropdownMenu = ref(null);
 const cleanupMenuOpen = ref(false);
+const cleanupMenuStyle = ref({});
 const pipelineForm = ref({
   name: "",
   description: "",
@@ -1154,6 +1158,11 @@ let refreshInterval = null;
 function toggleCleanupMenu() {
   if (cleaning.value) return;
   cleanupMenuOpen.value = !cleanupMenuOpen.value;
+  if (cleanupMenuOpen.value) {
+    nextTick(() => {
+      adjustCleanupMenuPosition();
+    });
+  }
 }
 
 function closeCleanupMenu() {
@@ -1166,6 +1175,42 @@ function handleCleanupOutsideClick(event) {
   if (!wrap.contains(event.target)) {
     closeCleanupMenu();
   }
+}
+
+function adjustCleanupMenuPosition() {
+  const menu = cleanupDropdownMenu.value;
+  if (!menu) return;
+
+  const gap = 8;
+  const rect = menu.getBoundingClientRect();
+  const style = {
+    maxHeight: "60vh",
+    overflowY: "auto",
+  };
+
+  // 默认右对齐向下展开，超边界时自动纠正
+  if (rect.right > window.innerWidth - gap) {
+    style.right = "0";
+    style.left = "auto";
+  }
+  if (rect.left < gap) {
+    style.left = "0";
+    style.right = "auto";
+  }
+
+  if (rect.bottom > window.innerHeight - gap) {
+    style.top = "auto";
+    style.bottom = "100%";
+    style.marginBottom = "0.25rem";
+    style.marginTop = "0";
+  } else {
+    style.top = "100%";
+    style.bottom = "auto";
+    style.marginTop = "0.25rem";
+    style.marginBottom = "0";
+  }
+
+  cleanupMenuStyle.value = style;
 }
 
 // 启动定时刷新（只在有运行中任务时启动）
@@ -2480,6 +2525,7 @@ function handleTaskCreated(event) {
 
 onMounted(() => {
   document.addEventListener("click", handleCleanupOutsideClick);
+  window.addEventListener("resize", adjustCleanupMenuPosition);
 
   // 监听任务创建事件
   window.addEventListener("taskCreated", handleTaskCreated);
@@ -2504,6 +2550,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener("click", handleCleanupOutsideClick);
+  window.removeEventListener("resize", adjustCleanupMenuPosition);
 
   // 移除任务创建事件监听器
   window.removeEventListener("taskCreated", handleTaskCreated);
