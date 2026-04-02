@@ -7,6 +7,9 @@
   --admin-sidebar-border: #e2e8f0;
   --admin-navbar-bg: #ffffff;
   --admin-content-bg: #f1f5f9;
+  --admin-panel-border: #e2e8f0;
+  --admin-panel-radius: 0.5rem;
+  --admin-panel-shadow: 0 1px 2px 0 rgb(15 23 42 / 0.05);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;

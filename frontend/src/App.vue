@@ -208,11 +208,11 @@
       <!-- 主内容 -->
       <div class="admin-main-wrap">
         <main class="admin-main">
-          <header class="admin-page-header">
-            <h1 class="admin-page-title h4 mb-0">{{ pageTitle }}</h1>
-          </header>
-
-          <div class="admin-page-body">
+          <div class="admin-content-panel">
+            <header class="admin-content-panel__header">
+              <h1 class="admin-page-title h5 mb-0">{{ pageTitle }}</h1>
+            </header>
+            <div class="admin-content-panel__body">
             <DashboardPanel
               v-if="
                 activeTab === 'dashboard' && hasPermission('menu.dashboard')
@@ -270,30 +270,36 @@
               @save="handleBuildConfigSave"
               @cancel="handleBuildConfigCancel"
             />
+            </div>
           </div>
 
-          <footer class="admin-footer text-muted small mt-4 pb-3">
-            <div class="d-flex flex-wrap align-items-center gap-2">
-              <span>当前版本 <strong class="text-body">v{{ appVersion || "…" }}</strong></span>
-              <span class="text-secondary">·</span>
-              <button
-                type="button"
-                class="btn btn-link btn-sm text-muted p-0 align-baseline"
-                @click="openVersionModal"
-              >
-                检查更新与发行说明
-              </button>
-            </div>
-            <div class="mt-2">
-              <i class="fas fa-code-branch me-1 opacity-75"></i>
-              <span class="me-1">Gitee</span>
-              <a
-                :href="GITEE_REPO_URL"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="link-secondary text-break"
-                >{{ GITEE_REPO_URL }}</a
-              >
+          <footer class="admin-footer" role="contentinfo">
+            <div class="admin-footer__inner">
+              <div class="admin-footer__row">
+                <span class="admin-footer__meta">
+                  当前版本
+                  <strong class="admin-footer__strong">v{{ appVersion || "…" }}</strong>
+                </span>
+                <span class="admin-footer__sep" aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  class="btn btn-link btn-sm admin-footer__link p-0"
+                  @click="openVersionModal"
+                >
+                  检查更新与发行说明
+                </button>
+              </div>
+              <div class="admin-footer__row">
+                <i class="fas fa-code-branch admin-footer__icon" aria-hidden="true"></i>
+                <span class="admin-footer__label">Gitee</span>
+                <a
+                  :href="GITEE_REPO_URL"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="admin-footer__anchor text-break"
+                  >{{ GITEE_REPO_URL }}</a
+                >
+              </div>
             </div>
           </footer>
         </main>
@@ -465,7 +471,7 @@
 <script setup>
 import axios from "axios";
 import { Dropdown, Modal, Toast } from "bootstrap";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useModalEscape } from "./composables/useModalEscape";
 import { getToken, getUsername, isAuthenticated, logout } from "./utils/auth";
 
@@ -542,7 +548,21 @@ const SIDEBAR_STORAGE_KEY = "app2docker-admin-sidebar-collapsed";
 
 const authenticated = ref(false);
 const username = ref("");
-const activeTab = ref("dashboard");
+const ACTIVE_TAB_STORAGE_KEY = "app2docker-active-tab";
+
+const activeTab = ref(
+  typeof sessionStorage !== "undefined"
+    ? sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || "dashboard"
+    : "dashboard"
+);
+
+watch(activeTab, (newTab) => {
+  try {
+    sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, newTab);
+  } catch {
+    /* ignore */
+  }
+});
 const showConfig = ref(false);
 const showUserCenter = ref(false);
 const runningTasksCount = ref(0);
@@ -977,6 +997,8 @@ onUnmounted(() => {
   margin-left: var(--admin-sidebar-width, 256px);
   min-height: calc(100vh - var(--admin-navbar-height, 56px));
   transition: margin-left 0.2s ease;
+  display: flex;
+  flex-direction: column;
 }
 
 .admin-layout--sidebar-collapsed .admin-main-wrap {
@@ -984,28 +1006,139 @@ onUnmounted(() => {
 }
 
 .admin-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   max-width: 1600px;
   margin: 0 auto;
-  padding: 1.25rem 1.25rem 0;
+  padding: 1rem 1rem 0;
+  box-sizing: border-box;
 }
 
 @media (min-width: 992px) {
   .admin-main {
-    padding: 1.5rem 1.75rem 0;
+    padding: 1.5rem 1.5rem 0;
   }
 }
 
-.admin-page-header {
-  margin-bottom: 1rem;
+/* Flowbite 式主内容面板：灰底上的白卡片 */
+.admin-content-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid var(--admin-panel-border, #e2e8f0);
+  border-radius: var(--admin-panel-radius, 0.5rem);
+  box-shadow: var(--admin-panel-shadow, 0 1px 2px 0 rgb(15 23 42 / 0.05));
+  overflow: hidden;
+}
+
+.admin-content-panel__header {
+  flex-shrink: 0;
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--admin-panel-border, #e2e8f0);
+  background: #fff;
+}
+
+.admin-content-panel__body {
+  flex: 1;
+  padding: 1rem 1rem 1.25rem;
+  min-height: 400px;
+}
+
+@media (min-width: 992px) {
+  .admin-content-panel__header {
+    padding: 1rem 1.5rem;
+  }
+  .admin-content-panel__body {
+    padding: 1.25rem 1.5rem 1.5rem;
+  }
 }
 
 .admin-page-title {
   font-weight: 600;
   color: #0f172a;
+  letter-spacing: -0.01em;
 }
 
-.admin-page-body {
-  min-height: 400px;
+/* 底部栏：与主内容区左右对齐、统一字色与分隔 */
+.admin-footer {
+  flex-shrink: 0;
+  margin-top: 1.25rem;
+  padding: 1rem 0 1.25rem;
+  border-top: 1px solid var(--admin-panel-border, #e2e8f0);
+}
+
+.admin-footer__inner {
+  max-width: 100%;
+}
+
+.admin-footer__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.admin-footer__row + .admin-footer__row {
+  margin-top: 0.4rem;
+}
+
+.admin-footer__meta {
+  color: #64748b;
+}
+
+.admin-footer__strong {
+  color: #334155;
+  font-weight: 600;
+}
+
+.admin-footer__sep {
+  color: #cbd5e1;
+  user-select: none;
+}
+
+.admin-footer__link {
+  font-size: inherit;
+  line-height: inherit;
+  color: #64748b !important;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.admin-footer__link:hover {
+  color: #0d6efd !important;
+  text-decoration: underline;
+}
+
+.admin-footer__icon {
+  color: #94a3b8;
+  font-size: 0.875rem;
+}
+
+.admin-footer__label {
+  color: #64748b;
+  margin-right: 0.15rem;
+}
+
+.admin-footer__anchor {
+  color: #64748b;
+  text-decoration: none;
+}
+
+.admin-footer__anchor:hover {
+  color: #0d6efd;
+  text-decoration: underline;
+}
+
+/* 面板内嵌套卡片略减阴影，避免层次过重 */
+.admin-content-panel__body .card {
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
 }
 
 .admin-running-dropdown {

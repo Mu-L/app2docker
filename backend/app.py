@@ -564,14 +564,8 @@ async def startup_event():
                 )
                 print(f"   提示: 连接可能在后台建立中，请稍候...")
 
-            # 部署任务恢复依赖 Agent WebSocket（含本地 Agent），在连接尝试后执行
-            try:
-                await recover_deploy_tasks_after_restart()
-            except Exception as recover_err:
-                print(f"⚠️ 部署任务重启恢复失败: {recover_err}")
-                import traceback
-
-                traceback.print_exc()
+            # 部署任务恢复依赖 Agent WebSocket（含本地 Agent），放到后台执行，不阻塞启动
+            asyncio.create_task(_background_recover_deploy_tasks())
 
         except Exception as e:
             print(f"⚠️ 启动本地 Agent WebSocket 客户端失败: {e}")
@@ -632,6 +626,18 @@ async def startup_event():
     print("⚙️  配置文件: data/config.yml")
     print("⏰ 流水线调度器: 已启动")
     print("=" * 60)
+
+
+async def _background_recover_deploy_tasks() -> None:
+    """后台执行部署任务恢复，不阻塞主程序启动。"""
+    # 等待服务完全就绪后再开始恢复
+    await asyncio.sleep(5)
+    try:
+        await recover_deploy_tasks_after_restart()
+    except Exception as recover_err:
+        print(f"⚠️ 部署任务重启恢复失败: {recover_err}")
+        import traceback
+        traceback.print_exc()
 
 
 # 关闭事件
