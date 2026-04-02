@@ -9,20 +9,20 @@
     >
       <!-- 顶部导航 -->
       <nav
-        class="admin-navbar navbar navbar-light fixed-top border-bottom bg-white"
+        class="admin-navbar navbar fixed-top border-bottom"
       >
         <div class="container-fluid px-2 px-sm-3 d-flex flex-wrap align-items-center gap-2">
           <div class="d-flex align-items-center gap-1 gap-sm-2 flex-shrink-0">
             <button
               type="button"
-              class="btn btn-link text-body p-2 admin-navbar-icon-btn"
+              class="btn btn-link admin-navbar-icon-btn"
               title="展开/收起侧边栏"
               aria-label="展开或收起侧边栏"
               @click="toggleSidebar"
             >
               <i class="fas fa-bars"></i>
             </button>
-            <span class="navbar-brand mb-0 d-flex align-items-center gap-2 text-dark fw-semibold">
+            <span class="navbar-brand mb-0 d-flex align-items-center gap-2 fw-semibold">
               <i class="fas fa-box-open text-primary"></i>
               <span class="d-none d-sm-inline">App2Docker</span>
             </span>
@@ -56,7 +56,7 @@
               >
                 <i class="fas fa-spinner fa-spin"></i>
                 <span class="d-none d-md-inline ms-1">运行任务</span>
-                <span class="badge bg-danger ms-1">{{ runningTasksCount }}</span>
+                <span class="badge bg-dark ms-1">{{ runningTasksCount }}</span>
               </button>
               <div
                 class="dropdown-menu dropdown-menu-end p-0 shadow admin-running-dropdown"
@@ -123,7 +123,7 @@
             >
               <i class="fas fa-check-circle"></i>
               <span class="d-none d-md-inline ms-1">运行任务</span>
-              <span class="badge bg-secondary ms-1">0</span>
+              <span class="badge ms-1" style="background: #475569">{{ runningTasksCount }}</span>
             </button>
 
             <!-- 用户菜单 -->
@@ -1135,7 +1135,49 @@ onUnmounted(() => {
 .admin-navbar {
   height: var(--admin-navbar-height, 56px);
   z-index: 1030;
-  background-color: var(--admin-navbar-bg, #ffffff) !important;
+  background-color: #1e293b !important;
+  border-bottom: 1px solid #334155;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 0.1);
+}
+
+.admin-navbar .navbar-brand {
+  color: #f1f5f9 !important;
+}
+
+.admin-navbar .text-body {
+  color: #cbd5e1 !important;
+}
+
+.admin-navbar .btn-outline-secondary,
+.admin-navbar .btn-outline-secondary:hover,
+.admin-navbar .btn-outline-secondary:focus {
+  color: #cbd5e1;
+  border-color: #475569;
+  background-color: transparent;
+}
+
+.admin-navbar .btn-outline-secondary:hover {
+  background-color: #334155;
+  border-color: #64748b;
+  color: #f1f5f9;
+}
+
+.admin-navbar .dropdown-menu {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+}
+
+.admin-navbar .dropdown-item {
+  color: #cbd5e1;
+}
+
+.admin-navbar .dropdown-item:hover {
+  background-color: #334155;
+  color: #f1f5f9;
+}
+
+.admin-navbar .dropdown-divider {
+  border-top-color: #334155;
 }
 
 .admin-navbar-icon-btn {
@@ -1145,7 +1187,7 @@ onUnmounted(() => {
 }
 .admin-navbar-icon-btn:hover,
 .admin-navbar-icon-btn:focus {
-  color: #0d6efd !important;
+  color: #60a5fa !important;
 }
 
 .admin-sidebar {
@@ -1154,8 +1196,8 @@ onUnmounted(() => {
   left: 0;
   bottom: 0;
   width: var(--admin-sidebar-width, 256px);
-  background: var(--admin-sidebar-bg, #f8fafc);
-  border-right: 1px solid var(--admin-sidebar-border, #e2e8f0);
+  background: #1e293b;
+  border-right: 1px solid #334155;
   z-index: 1020;
   transition: width 0.2s ease;
   overflow-x: hidden;
@@ -1169,48 +1211,45 @@ onUnmounted(() => {
 .admin-sidebar-nav {
   display: flex;
   flex-direction: column;
-  padding: 0.65rem 0;
-  gap: 0.05rem;
+  padding: 0.75rem 0.5rem;
+  gap: 0.15rem;
 }
 
 /* 首页：单级入口（对应仪表盘） */
 .admin-sidebar-home {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.75rem;
   width: 100%;
-  padding: 0.55rem 0.75rem 0.55rem 0.65rem;
+  padding: 0.6rem 0.85rem;
   border: none;
   background: transparent;
-  color: #334155;
+  color: #cbd5e1;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
-  border-left: 3px solid transparent;
-  border-radius: 0 0.25rem 0.25rem 0;
+  border-radius: 0.5rem;
   transition:
-    background 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
+    background 0.2s ease,
+    color 0.2s ease;
   white-space: nowrap;
 }
 
 .admin-sidebar-home:hover {
-  background: rgba(59, 130, 246, 0.08);
-  color: #1e40af;
+  background: #334155;
+  color: #f1f5f9;
 }
 
 .admin-sidebar-home.active {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
-  border-left-color: #2563eb;
+  background: #3b82f6;
+  color: #fff;
 }
 
 .admin-sidebar-divider {
   height: 1px;
-  margin: 0.35rem 0.75rem 0.45rem 0.65rem;
-  background: #e2e8f0;
+  margin: 0.5rem 0.85rem;
+  background: #334155;
 }
 
 .admin-sidebar-divider--collapsed {
@@ -1218,6 +1257,7 @@ onUnmounted(() => {
   height: 1px;
   margin: 0.25rem auto 0.35rem;
   align-self: center;
+  background: #475569;
 }
 
 .admin-sidebar-label {
@@ -1234,88 +1274,89 @@ onUnmounted(() => {
 .admin-sidebar-group__toggle {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.75rem;
   width: 100%;
-  padding: 0.5rem 0.75rem 0.5rem 0.65rem;
+  padding: 0.5rem 0.85rem;
   border: none;
   background: transparent;
-  color: #334155;
-  font-size: 0.8125rem;
+  color: #94a3b8;
+  font-size: 0.7rem;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   text-align: left;
   cursor: pointer;
-  border-left: 3px solid transparent;
-  border-radius: 0 0.25rem 0.25rem 0;
+  border-radius: 0.375rem;
   transition:
-    background 0.15s ease,
-    color 0.15s ease,
-    border-color 0.15s ease;
+    background 0.2s ease,
+    color 0.2s ease;
   white-space: nowrap;
 }
 
 .admin-sidebar-group__toggle:hover {
-  background: rgba(59, 130, 246, 0.08);
-  color: #1e40af;
+  background: #334155;
+  color: #cbd5e1;
 }
 
 .admin-sidebar-group--active .admin-sidebar-group__toggle {
-  color: #1d4ed8;
+  color: #cbd5e1;
 }
 
 .admin-sidebar-group__chevron {
   flex-shrink: 0;
   font-size: 0.6rem;
-  color: #94a3b8;
+  color: #64748b;
   transition: transform 0.2s ease;
 }
 
 .admin-sidebar-group--open .admin-sidebar-group__chevron {
   transform: rotate(-180deg);
+  color: #94a3b8;
 }
 
 /* 二级菜单 */
 .admin-sidebar-children {
   display: flex;
   flex-direction: column;
-  margin: 0.15rem 0 0.35rem 0.65rem;
-  padding-left: 0.5rem;
-  border-left: 2px solid #e2e8f0;
+  margin: 0.15rem 0 0.25rem 0.5rem;
+  padding-left: 0.35rem;
+  gap: 0.1rem;
 }
 
 .admin-sidebar-sublink {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.65rem;
   width: 100%;
-  padding: 0.4rem 0.5rem 0.4rem 0.45rem;
+  padding: 0.5rem 0.75rem;
   border: none;
   background: transparent;
-  color: #475569;
+  color: #cbd5e1;
   font-size: 0.8125rem;
   font-weight: 400;
   text-align: left;
   cursor: pointer;
-  border-radius: 0 0.25rem 0.25rem 0;
+  border-radius: 0.5rem;
   transition:
-    background 0.15s ease,
-    color 0.15s ease;
+    background 0.2s ease,
+    color 0.2s ease;
   white-space: nowrap;
 }
 
 .admin-sidebar-sublink:hover {
-  background: rgba(59, 130, 246, 0.08);
-  color: #1e40af;
+  background: #334155;
+  color: #f1f5f9;
 }
 
 .admin-sidebar-sublink.active {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
-  font-weight: 600;
+  background: #3b82f6;
+  color: #fff;
+  font-weight: 500;
 }
 
 /* 侧栏收起：图标 + 右侧飞出子菜单 */
 .admin-sidebar-nav--collapsed {
-  padding: 0.4rem 0;
+  padding: 0.5rem 0.35rem;
   align-items: center;
 }
 
@@ -1333,24 +1374,30 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 0.375rem;
+  border-radius: 0.5rem;
   background: transparent;
-  color: #334155;
+  color: #cbd5e1;
   cursor: pointer;
   transition:
-    background 0.15s ease,
-    color 0.15s ease;
+    background 0.2s ease,
+    color 0.2s ease;
 }
 
 .admin-sidebar-flyout-trigger:hover,
 .admin-sidebar-flyout-trigger:focus {
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
+  background: #334155;
+  color: #f1f5f9;
 }
 
 .admin-sidebar-flyout-trigger--active {
-  background: rgba(59, 130, 246, 0.15);
-  color: #1d4ed8;
+  background: #3b82f6;
+  color: #fff;
+}
+
+.admin-sidebar-flyout-trigger--home:hover,
+.admin-sidebar-flyout-trigger--home:focus,
+.admin-sidebar-flyout-trigger--home.admin-sidebar-flyout-trigger--active {
+  color: #fff;
 }
 
 .admin-sidebar-flyout-menu {

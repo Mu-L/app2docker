@@ -636,6 +636,8 @@ async def _background_recover_deploy_tasks() -> None:
     先等待本地 Agent WebSocket 连接建立（最多 30 秒），
     再执行部署任务恢复检查。
     """
+    import asyncio
+    from backend.handlers import recover_deploy_tasks_after_restart
     from backend.websocket_handler import active_connections
 
     # 等待本地 Agent WebSocket 连接建立（最多 30 秒）

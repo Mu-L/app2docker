@@ -495,9 +495,23 @@ class PortainerExecutor(DeployExecutor):
                     if isinstance(ctx.get("app"), dict)
                     else "app"
                 )
-                stack_name = deploy_config.get("stack_name") or (
-                    f"{app_name}-{target_name}" if target_name else app_name
-                )
+                default_stack_name = f"{app_name}-{target_name}" if target_name else app_name
+                custom_stack_name = deploy_config.get("stack_name")
+                stack_name = custom_stack_name or default_stack_name
+
+                # update_existing + stack_id 时，实际部署的 stack_name 可能与默认不同
+                # 需要和 execute 逻辑一致：从 Portainer 获取实际名称
+                stack_strategy = deploy_config.get("stack_strategy", "create_new")
+                selected_stack_id = deploy_config.get("stack_id")
+                if stack_strategy == "update_existing" and selected_stack_id:
+                    try:
+                        stack_info = client.get_stack(int(selected_stack_id))
+                        actual_name = stack_info.get("Name")
+                        if actual_name:
+                            stack_name = actual_name
+                    except Exception:
+                        pass  # 查不到就用默认名称
+
                 stack = client.get_stack_by_name(stack_name)
                 if not stack:
                     return {
