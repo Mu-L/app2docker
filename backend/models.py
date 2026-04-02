@@ -367,6 +367,9 @@ class User(Base):
     roles = relationship(
         "UserRole", back_populates="user", cascade="all, delete-orphan"
     )
+    app_keys = relationship(
+        "AppKey", back_populates="user", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (Index("idx_user_username", "username"),)
 
@@ -391,6 +394,31 @@ class Role(Base):
     )
 
     __table_args__ = (Index("idx_role_name", "name"),)
+
+
+class AppKey(Base):
+    """用户 APP Key 表"""
+
+    __tablename__ = "app_keys"
+
+    key_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    key_hash = Column(String(64), unique=True, nullable=False)
+    key_prefix = Column(String(16), nullable=False)
+    enabled = Column(Boolean, default=True)
+    last_used_at = Column(DateTime)
+    expires_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("User", back_populates="app_keys")
+
+    __table_args__ = (
+        Index("idx_app_key_user", "user_id"),
+        Index("idx_app_key_hash", "key_hash"),
+        Index("idx_app_key_enabled", "enabled"),
+    )
 
 
 class Permission(Base):

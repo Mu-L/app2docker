@@ -24,21 +24,6 @@
               <i class="fas fa-box-open text-blue-600"></i>
               <span class="hidden sm:inline">App2Docker</span>
             </span>
-            <button
-              type="button"
-              class="inline-flex items-center rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-700 transition hover:bg-gray-50"
-              title="版本与更新"
-              @click="openVersionModal"
-            >
-              <i class="fas fa-tag me-1"></i>
-              <span>v{{ appVersion || "…" }}</span>
-              <span
-                v-if="updateStatus.hasUpdate"
-                class="ms-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"
-                style="font-size: 0.65rem"
-                >新</span
-              >
-            </button>
           </div>
 
           <div class="ms-auto flex shrink-0 items-center gap-2">
@@ -191,125 +176,160 @@
         :class="sidebarCollapsed ? 'w-16' : 'w-64'"
         aria-label="主导航"
       >
-        <nav v-if="!sidebarCollapsed" class="space-y-2 p-3">
-          <button
-            v-if="hasPermission('menu.dashboard')"
-            type="button"
-            class="group flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 hover:text-gray-900"
-            :class="activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : ''"
-            title="首页"
-            @click="activeTab = 'dashboard'"
-          >
-            <i class="fas fa-house fa-fw text-gray-500 group-hover:text-gray-700"></i>
-            <span class="truncate">首页</span>
-          </button>
-          <div
-            v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
-            class="my-2 h-px bg-gray-200"
-            role="separator"
-          />
-          <div
-            v-for="group in visibleSidebarGroups"
-            :key="group.id"
-            class="space-y-1"
-          >
+        <nav v-if="!sidebarCollapsed" class="flex h-full flex-col p-3">
+          <div class="space-y-2 overflow-y-auto">
             <button
+              v-if="hasPermission('menu.dashboard')"
               type="button"
-              class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 transition hover:bg-gray-100 hover:text-gray-700"
-              :class="groupHasActiveChild(group) ? 'text-gray-700' : ''"
-              :aria-expanded="isGroupExpanded(group.id)"
-              @click="toggleGroup(group.id)"
+              class="group flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 hover:text-gray-900"
+              :class="activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : ''"
+              title="首页"
+              @click="activeTab = 'dashboard'"
             >
-              <i :class="['fa-fw', 'fas', group.icon, 'text-gray-400']"></i>
-              <span class="grow text-start truncate">{{
-                group.label
-              }}</span>
-              <i
-                class="fas fa-chevron-down text-[10px] text-gray-400 transition-transform duration-200"
-                :class="isGroupExpanded(group.id) ? 'rotate-180' : ''"
-                aria-hidden="true"
-              ></i>
+              <i class="fas fa-house fa-fw text-gray-500 group-hover:text-gray-700"></i>
+              <span class="truncate">首页</span>
             </button>
             <div
-              v-show="isGroupExpanded(group.id)"
-              class="space-y-1 pl-3"
+              v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
+              class="my-2 h-px bg-gray-200"
+              role="separator"
+            />
+            <div
+              v-for="group in visibleSidebarGroups"
+              :key="group.id"
+              class="space-y-1"
             >
               <button
-                v-for="child in group.children"
-                :key="child.id"
                 type="button"
-                class="group flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-100 hover:text-gray-900"
-                :class="activeTab === child.id ? 'bg-blue-50 text-blue-700' : ''"
-                :title="child.label"
-                @click="activeTab = child.id"
+                class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 transition hover:bg-gray-100 hover:text-gray-700"
+                :class="groupHasActiveChild(group) ? 'text-gray-700' : ''"
+                :aria-expanded="isGroupExpanded(group.id)"
+                @click="toggleGroup(group.id)"
               >
+                <i :class="['fa-fw', 'fas', group.icon, 'text-gray-400']"></i>
+                <span class="grow text-start truncate">{{
+                  group.label
+                }}</span>
                 <i
-                  :class="[
-                    'fa-fw',
-                    child.iconPrefix || 'fas',
-                    child.icon,
-                    activeTab === child.id ? 'text-blue-600' : 'text-gray-400',
-                  ]"
+                  class="fas fa-chevron-down text-[10px] text-gray-400 transition-transform duration-200"
+                  :class="isGroupExpanded(group.id) ? 'rotate-180' : ''"
+                  aria-hidden="true"
                 ></i>
-                <span class="truncate">{{ child.label }}</span>
               </button>
+              <div
+                v-show="isGroupExpanded(group.id)"
+                class="space-y-1 pl-3"
+              >
+                <button
+                  v-for="child in group.children"
+                  :key="child.id"
+                  type="button"
+                  class="group flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-600 transition hover:bg-gray-100 hover:text-gray-900"
+                  :class="activeTab === child.id ? 'bg-blue-50 text-blue-700' : ''"
+                  :title="child.label"
+                  @click="activeTab = child.id"
+                >
+                  <i
+                    :class="[
+                      'fa-fw',
+                      child.iconPrefix || 'fas',
+                      child.icon,
+                      activeTab === child.id ? 'text-blue-600' : 'text-gray-400',
+                    ]"
+                  ></i>
+                  <span class="truncate">{{ child.label }}</span>
+                </button>
+              </div>
             </div>
+          </div>
+          <div class="mt-3 border-t border-gray-200 pt-3">
+            <button
+              type="button"
+              class="inline-flex w-full items-center justify-center rounded-lg border border-gray-300 px-2 py-2 text-xs text-gray-700 transition hover:bg-gray-50"
+              title="版本与更新"
+              @click="openVersionModal"
+            >
+              <i class="fas fa-tag me-1"></i>
+              <span>v{{ appVersion || "…" }}</span>
+              <span
+                v-if="updateStatus.hasUpdate"
+                class="ms-1 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700"
+                style="font-size: 0.65rem"
+                >新</span
+              >
+            </button>
           </div>
         </nav>
         <nav
           v-else
-          class="flex flex-col items-center gap-2 px-2 py-3"
+          class="flex h-full flex-col items-center gap-2 px-2 py-3"
           aria-label="主导航"
         >
-          <button
-            v-if="hasPermission('menu.dashboard')"
-            type="button"
-            class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-800"
-            :class="activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : ''"
-            title="首页"
-            @click="activeTab = 'dashboard'"
-          >
-            <i class="fas fa-house fa-fw"></i>
-          </button>
-          <div
-            v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
-            class="my-1 h-px w-8 bg-gray-200"
-            role="separator"
-          />
-          <div
-            v-for="group in visibleSidebarGroups"
-            :key="'fly-' + group.id"
-            class="dropend flex w-full justify-center"
-          >
+          <div class="flex w-full flex-1 flex-col items-center gap-2">
             <button
-              :id="'sidebar-flyout-' + group.id"
+              v-if="hasPermission('menu.dashboard')"
               type="button"
               class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-800"
-              data-bs-toggle="dropdown"
-              data-bs-offset="0,8"
-              aria-expanded="false"
-              :title="group.label"
+              :class="activeTab === 'dashboard' ? 'bg-blue-50 text-blue-700' : ''"
+              title="首页"
+              @click="activeTab = 'dashboard'"
             >
-              <i :class="['fa-fw', 'fas', group.icon]"></i>
+              <i class="fas fa-house fa-fw"></i>
             </button>
-            <ul
-              class="dropdown-menu dropdown-menu-start admin-sidebar-flyout-menu rounded-lg border border-gray-200 py-1 shadow-lg"
-              :aria-labelledby="'sidebar-flyout-' + group.id"
+            <div
+              v-if="hasPermission('menu.dashboard') && visibleSidebarGroups.length"
+              class="my-1 h-px w-8 bg-gray-200"
+              role="separator"
+            />
+            <div
+              v-for="group in visibleSidebarGroups"
+              :key="'fly-' + group.id"
+              class="dropend flex w-full justify-center"
             >
-              <li v-for="child in group.children" :key="child.id">
-                <button
-                  type="button"
-                  class="dropdown-item flex items-center gap-2 py-2"
-                  :class="activeTab === child.id ? 'active' : ''"
-                  @click="selectTabFromFlyout(group.id, child.id)"
-                >
-                  <i
-                    :class="[child.iconPrefix || 'fas', child.icon, 'text-muted']"
-                  ></i>
-                  {{ child.label }}
-                </button>
-              </li>
-            </ul>
+              <button
+                :id="'sidebar-flyout-' + group.id"
+                type="button"
+                class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-800"
+                data-bs-toggle="dropdown"
+                data-bs-offset="0,8"
+                aria-expanded="false"
+                :title="group.label"
+              >
+                <i :class="['fa-fw', 'fas', group.icon]"></i>
+              </button>
+              <ul
+                class="dropdown-menu dropdown-menu-start admin-sidebar-flyout-menu rounded-lg border border-gray-200 py-1 shadow-lg"
+                :aria-labelledby="'sidebar-flyout-' + group.id"
+              >
+                <li v-for="child in group.children" :key="child.id">
+                  <button
+                    type="button"
+                    class="dropdown-item flex items-center gap-2 py-2"
+                    :class="activeTab === child.id ? 'active' : ''"
+                    @click="selectTabFromFlyout(group.id, child.id)"
+                  >
+                    <i
+                      :class="[child.iconPrefix || 'fas', child.icon, 'text-muted']"
+                    ></i>
+                    {{ child.label }}
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="relative w-full border-t border-gray-200 pt-3">
+            <button
+              type="button"
+              class="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-gray-300 text-gray-600 transition hover:bg-gray-50"
+              title="版本与更新"
+              @click="openVersionModal"
+            >
+              <i class="fas fa-tag"></i>
+            </button>
+            <span
+              v-if="updateStatus.hasUpdate"
+              class="absolute ml-[-8px] mt-[-6px] inline-flex h-2.5 w-2.5 rounded-full bg-red-500"
+            />
           </div>
         </nav>
       </aside>
@@ -373,6 +393,7 @@
             <RoleManagement
               v-if="activeTab === 'roles' && hasPermission('menu.users')"
             />
+            <ApiDocsPanel v-if="activeTab === 'api-docs'" />
             <BuildConfigEditor
               v-if="activeTab === 'build-config-editor'"
               :initial-config="buildConfigToEdit"
@@ -584,6 +605,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useModalEscape } from "./composables/useModalEscape";
 import { getToken, getUsername, isAuthenticated, logout } from "./utils/auth";
 
+import ApiDocsPanel from "./components/ApiDocsPanel.vue";
 import BuildConfigEditor from "./components/BuildConfigEditor.vue";
 import ConfigModal from "./components/ConfigModal.vue";
 import DashboardPanel from "./components/DashboardPanel.vue";
@@ -708,6 +730,7 @@ const SIDEBAR_GROUPS = [
         icon: "fa-user-shield",
       },
       { id: "logs", perm: null, label: "操作日志", icon: "fa-history" },
+      { id: "api-docs", perm: null, label: "接口说明", icon: "fa-book" },
     ],
   },
 ];
@@ -728,6 +751,7 @@ const PAGE_TITLES = {
   users: "用户管理",
   roles: "角色管理",
   logs: "操作日志",
+  "api-docs": "接口说明",
   "build-config-editor": "构建配置",
 };
 

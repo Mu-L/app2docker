@@ -125,6 +125,9 @@ def init_db():
     # 迁移：创建agent_secrets表
     migrate_add_agent_secrets_table()
 
+    # 迁移：创建 app_keys 表
+    migrate_add_app_keys_table()
+
     # 迁移：添加agent_unique_id字段到agent_hosts表
     migrate_add_agent_unique_id()
 
@@ -763,6 +766,58 @@ def migrate_add_agent_secrets_table():
             print(f"⚠️ 创建agent_secrets表失败: {e}")
     except Exception as e:
         print(f"⚠️ 创建agent_secrets表失败: {e}")
+
+
+def migrate_add_app_keys_table():
+    """迁移：创建 app_keys 表"""
+    if not os.path.exists(DB_FILE):
+        return
+
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        cursor = conn.cursor()
+
+        # 检查表是否已存在
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='app_keys'"
+        )
+        if cursor.fetchone():
+            conn.close()
+            print("✅ app_keys 表已存在")
+            return
+
+        cursor.execute(
+            """
+            CREATE TABLE app_keys (
+                key_id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                key_hash VARCHAR(64) UNIQUE NOT NULL,
+                key_prefix VARCHAR(16) NOT NULL,
+                enabled BOOLEAN DEFAULT 1,
+                last_used_at DATETIME,
+                expires_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        """
+        )
+
+        cursor.execute("CREATE INDEX idx_app_key_user ON app_keys(user_id)")
+        cursor.execute("CREATE UNIQUE INDEX idx_app_key_hash ON app_keys(key_hash)")
+        cursor.execute("CREATE INDEX idx_app_key_enabled ON app_keys(enabled)")
+
+        conn.commit()
+        conn.close()
+        print("✅ app_keys 表创建成功")
+    except sqlite3.OperationalError as e:
+        if "already exists" in str(e).lower():
+            print("✅ app_keys 表已存在")
+        else:
+            print(f"⚠️ 创建app_keys表失败: {e}")
+    except Exception as e:
+        print(f"⚠️ 创建app_keys表失败: {e}")
 
 
 def migrate_add_agent_unique_id():

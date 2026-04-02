@@ -64,6 +64,13 @@ from backend.config import (
 )
 from backend.utils import get_safe_filename
 from backend.auth import authenticate, verify_token
+from backend.app_key_manager import (
+    generate_app_key,
+    validate_app_key,
+    get_user_app_keys,
+    delete_app_key,
+    toggle_app_key,
+)
 import jwt
 
 
@@ -73,6 +80,12 @@ def get_current_username(request: Request) -> str:
         # FastAPI/Starlette 会将 header 名称标准化为小写
         # 使用小写 'authorization' 是标准做法
         # 注意：request.headers 是 Headers 对象，支持大小写不敏感的查找
+        api_key = request.headers.get("x-api-key", "").strip()
+        if api_key:
+            api_key_result = validate_app_key(api_key)
+            if api_key_result and api_key_result.get("username"):
+                return api_key_result["username"]
+
         auth_header = request.headers.get("authorization", "")
 
         if not auth_header:
@@ -133,6 +146,12 @@ def get_current_username(request: Request) -> str:
 def require_auth(request: Request) -> str:
     """要求认证，获取当前用户名，token过期时抛出401异常"""
     try:
+        api_key = request.headers.get("x-api-key", "").strip()
+        if api_key:
+            api_key_result = validate_app_key(api_key)
+            if api_key_result and api_key_result.get("username"):
+                return api_key_result["username"]
+
         auth_header = request.headers.get("authorization", "")
 
         if not auth_header:
@@ -156,7 +175,7 @@ def require_auth(request: Request) -> str:
         if not token:
             raise HTTPException(status_code=401, detail="未授权，请重新登录")
 
-        # 验证 token
+        # 验证 Bearer token（JWT 或 APP Key）
         result = verify_token(token)
         if result.get("valid"):
             username = result.get("username")
@@ -261,6 +280,11 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class CreateAppKeyRequest(BaseModel):
+    name: str
+    expires_at: Optional[str] = None
+
+
 @router.post("/change-password")
 async def change_password(request: ChangePasswordRequest, http_request: Request):
     """修改密码"""
@@ -304,6 +328,128 @@ async def change_password(request: ChangePasswordRequest, http_request: Request)
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"修改密码失败: {str(e)}")
+
+
+@router.get("/user/app-keys")
+async def get_my_app_keys(request: Request):
+    """获取当前用户的 APP Key 列表"""
+    try:
+        from backend.database import get_db_session
+        from backend.models import User
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+            keys = get_user_app_keys(user.user_id)
+            return JSONResponse({"success": True, "app_keys": keys})
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取 APP Key 失败: {str(e)}")
+
+
+@router.post("/user/app-keys")
+async def create_my_app_key(request: CreateAppKeyRequest, http_request: Request):
+    """创建当前用户的 APP Key"""
+    try:
+        from backend.database import get_db_session
+        from backend.models import User
+        from datetime import datetime
+
+        username = require_auth(http_request)
+        db = get_db_session()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            expires_at = None
+            if request.expires_at:
+                expires_text = request.expires_at.replace("Z", "+00:00")
+                expires_at = datetime.fromisoformat(expires_text)
+
+            created = generate_app_key(
+                user_id=user.user_id,
+                name=request.name,
+                expires_at=expires_at,
+            )
+            OperationLogger.log(username, "create_app_key", {"name": request.name})
+            return JSONResponse({"success": True, **created})
+        finally:
+            db.close()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="expires_at 格式无效")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建 APP Key 失败: {str(e)}")
+
+
+@router.delete("/user/app-keys/{key_id}")
+async def delete_my_app_key(key_id: str, request: Request):
+    """删除当前用户的 APP Key"""
+    try:
+        from backend.database import get_db_session
+        from backend.models import User
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            deleted = delete_app_key(key_id=key_id, user_id=user.user_id)
+            if not deleted:
+                raise HTTPException(status_code=404, detail="APP Key 不存在")
+
+            OperationLogger.log(username, "delete_app_key", {"key_id": key_id})
+            return JSONResponse({"success": True, "message": "APP Key 已删除"})
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除 APP Key 失败: {str(e)}")
+
+
+@router.put("/user/app-keys/{key_id}/toggle")
+async def toggle_my_app_key(key_id: str, request: Request):
+    """启用/禁用当前用户的 APP Key"""
+    try:
+        from backend.database import get_db_session
+        from backend.models import User
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user = db.query(User).filter(User.username == username).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            enabled = toggle_app_key(key_id=key_id, user_id=user.user_id)
+            if enabled is None:
+                raise HTTPException(status_code=404, detail="APP Key 不存在")
+
+            OperationLogger.log(
+                username,
+                "toggle_app_key",
+                {"key_id": key_id, "enabled": enabled},
+            )
+            return JSONResponse(
+                {"success": True, "enabled": enabled, "message": f"APP Key 已{'启用' if enabled else '禁用'}"}
+            )
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"切换 APP Key 状态失败: {str(e)}")
 
 
 # === 用户管理 API ===

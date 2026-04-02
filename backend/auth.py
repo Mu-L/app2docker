@@ -82,6 +82,15 @@ def verify_token(token: str) -> dict:
     except jwt.ExpiredSignatureError:
         return {'valid': False, 'error': 'Token 已过期'}
     except jwt.InvalidTokenError:
+        # JWT 无效时，兼容把 token 当作 APP Key 使用
+        try:
+            from backend.app_key_manager import validate_app_key
+
+            app_key_result = validate_app_key(token)
+            if app_key_result and app_key_result.get("username"):
+                return {'valid': True, 'username': app_key_result["username"], 'auth_type': 'app_key'}
+        except Exception:
+            pass
         return {'valid': False, 'error': 'Token 无效'}
 
 
@@ -333,15 +342,14 @@ def require_auth(handler_method):
         # 从请求头获取 token
         auth_header = self.headers.get('Authorization', '')
         
-        if not auth_header.startswith('Bearer '):
-            self.send_response(401)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"error": "Unauthorized"}')
-            return
-        
-        token = auth_header[7:]  # 移除 "Bearer " 前缀
-        result = verify_token(token)
+        api_key = self.headers.get("X-API-Key", "").strip()
+        token = ""
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:].strip()
+
+        result = verify_token(token) if token else {'valid': False, 'error': 'Token 无效'}
+        if (not result.get("valid")) and api_key:
+            result = verify_token(api_key)
         
         if not result['valid']:
             self.send_response(401)
