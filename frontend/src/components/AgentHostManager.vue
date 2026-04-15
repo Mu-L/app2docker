@@ -83,24 +83,25 @@
               <button 
                 type="button" 
                 class="btn btn-primary btn-sm dropdown-toggle" 
-                data-bs-toggle="dropdown" 
-                aria-expanded="false"
+                :class="{ 'show': showDropdown }"
+                @click="toggleDropdown"
+                aria-expanded="showDropdown"
               >
                 <i class="fas fa-plus me-1"></i> 添加主机
               </button>
-              <ul class="dropdown-menu dropdown-menu-end">
+              <ul class="dropdown-menu dropdown-menu-end" :class="{ 'show': showDropdown }">
                 <li>
-                  <a class="dropdown-item" href="#" @click.prevent="showSshAddModal">
+                  <a class="dropdown-item" href="#" @click.prevent="handleAddHost('ssh')">
                     <i class="fas fa-server me-2"></i> SSH主机
                   </a>
                 </li>
                 <li>
-                  <a class="dropdown-item" href="#" @click.prevent="openAddModal('agent')">
+                  <a class="dropdown-item" href="#" @click.prevent="handleAddHost('agent')">
                     <i class="fas fa-network-wired me-2"></i> Agent主机
                   </a>
                 </li>
                 <li>
-                  <a class="dropdown-item" href="#" @click.prevent="openAddModal('portainer')">
+                  <a class="dropdown-item" href="#" @click.prevent="handleAddHost('portainer')">
                     <i class="fab fa-docker me-2"></i> Portainer主机
                   </a>
                 </li>
@@ -1287,6 +1288,7 @@ export default {
       sshHosts: [], // SSH主机列表
       allHostsLoading: false, // 加载所有主机时的loading状态
       loading: false,
+      showDropdown: false,
       showAddModal: false,
       showEditModal: false,
       showDetailModal: false,
@@ -1382,6 +1384,13 @@ export default {
         this.loadPendingHosts()
       }
     }, 30000)
+    // 点击外部关闭下拉菜单
+    this._closeDropdownHandler = (e) => {
+      if (!this.$el.contains(e.target)) {
+        this.showDropdown = false
+      }
+    }
+    document.addEventListener('click', this._closeDropdownHandler)
   },
   watch: {
     filterType(newVal) {
@@ -1408,8 +1417,23 @@ export default {
         ws.close()
       }
     })
+    // 清理下拉菜单事件监听
+    if (this._closeDropdownHandler) {
+      document.removeEventListener('click', this._closeDropdownHandler)
+    }
   },
   methods: {
+    toggleDropdown() {
+      this.showDropdown = !this.showDropdown
+    },
+    handleAddHost(type) {
+      this.showDropdown = false
+      if (type === 'ssh') {
+        this.showSshAddModal()
+      } else {
+        this.openAddModal(type)
+      }
+    },
     async loadSshHosts() {
       try {
         const res = await axios.get('/api/hosts')
