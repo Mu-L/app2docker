@@ -488,6 +488,36 @@ class PortainerClient:
         return True
 
     @classmethod
+    def extract_mutable_compose_images(
+        cls, compose_content: str
+    ) -> List[Dict[str, str]]:
+        """Return service image refs that should be re-pulled for mutable tag deploys."""
+        try:
+            compose = yaml.safe_load(compose_content) or {}
+        except Exception as exc:
+            logger.warning("Failed to parse compose content for image extraction: %s", exc)
+            return []
+
+        services = compose.get("services") if isinstance(compose, dict) else None
+        if not isinstance(services, dict):
+            return []
+
+        image_refs: List[Dict[str, str]] = []
+        for service_name, service in services.items():
+            if not isinstance(service, dict):
+                continue
+            image = service.get("image")
+            if not cls._image_uses_mutable_tag(image):
+                continue
+            image_refs.append(
+                {
+                    "service": str(service_name),
+                    "image": str(image).strip(),
+                }
+            )
+        return image_refs
+
+    @classmethod
     def inject_deploy_revision(
         cls, compose_content: str, revision: Optional[str]
     ) -> Tuple[str, bool, int]:
@@ -546,11 +576,13 @@ class PortainerClient:
         except Exception as read_err:
             logger.warning("读取更新前 Stack 文件失败 (stack_id=%s): %s", stack_id, read_err)
 
+        image_refs = self.extract_mutable_compose_images(compose_content)
         payload = {
             "StackFileContent": compose_content,
             "Env": self._split_env_pairs(env),
             "Prune": False,
-            # 即使镜像 tag 不变（如 latest），也尝试拉取新镜像，避免“更新成功但运行态未变化”
+            # 即使镜像 tag 不变（如 latest），也尝试拉取新镜像，避免“更新成功但运行态未变化”。
+            "RepullImageAndRedeploy": True,
             "PullImage": True,
         }
         self._request(
@@ -570,13 +602,26 @@ class PortainerClient:
                 stack_id,
                 self.endpoint_id,
             )
+
+        force_update_result = None
+        if stack_name:
+            force_update_result = self.force_update_swarm_stack_services(stack_name)
+            if force_update_result.get("checked") and not force_update_result.get("success"):
+                message = f"{message}；但 Swarm 服务强制更新失败: {force_update_result.get('message')}"
         return {
-            "success": True,
+            "success": not (
+                force_update_result
+                and force_update_result.get("checked")
+                and not force_update_result.get("success")
+            ),
             "message": message,
             "stack_id": stack_id,
             "stack_name": stack_name,
             "compose_changed": changed,
             "pull_image": True,
+            "repull_image_and_redeploy": True,
+            "compose_images": image_refs,
+            "force_update": force_update_result,
         }
 
     def deploy_container_as_stack(
@@ -753,6 +798,201 @@ class PortainerClient:
             params={"filters": json.dumps(filters)},
         )
 
+    def force_update_swarm_stack_services(self, stack_name: str) -> Dict[str, Any]:
+        """Force Swarm services in a stack to re-pull images and roll tasks."""
+        try:
+            services = self.get_swarm_stack_services(stack_name)
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if (
+                "not a swarm" in error_text
+                or "swarm has not been initialized" in error_text
+                or "not a swarm manager" in error_text
+            ):
+                return {
+                    "success": True,
+                    "checked": False,
+                    "message": f"Endpoint is not a Swarm manager: {stack_name}",
+                    "service_count": 0,
+                    "updated_services": [],
+                    "failed_services": [],
+                }
+            logger.warning("Failed to list Swarm services for %s: %s", stack_name, exc)
+            return {
+                "success": False,
+                "checked": True,
+                "message": f"Unable to list Swarm services: {exc}",
+                "service_count": 0,
+                "updated_services": [],
+                "failed_services": [],
+            }
+
+        if not services:
+            return {
+                "success": True,
+                "checked": False,
+                "message": f"No Swarm services found for Stack: {stack_name}",
+                "service_count": 0,
+                "updated_services": [],
+                "failed_services": [],
+            }
+
+        updated_services: List[Dict[str, str]] = []
+        failed_services: List[Dict[str, str]] = []
+        for service in services:
+            service_id = service.get("ID") or service.get("Id")
+            spec = service.get("Spec") or {}
+            service_name = spec.get("Name") or service_id or "unknown"
+            if not service_id:
+                failed_services.append(
+                    {
+                        "service": str(service_name),
+                        "error": "Service ID is missing",
+                    }
+                )
+                continue
+            try:
+                self._request(
+                    "PUT",
+                    f"/endpoints/{self.endpoint_id}/forceupdateservice",
+                    json={"ServiceID": service_id, "PullImage": True},
+                    timeout=60,
+                )
+                updated_services.append(
+                    {"service": str(service_name), "service_id": str(service_id)}
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to force update Swarm service %s (%s): %s",
+                    service_name,
+                    service_id,
+                    exc,
+                )
+                failed_services.append(
+                    {
+                        "service": str(service_name),
+                        "service_id": str(service_id),
+                        "error": str(exc),
+                    }
+                )
+
+        success = not failed_services
+        return {
+            "success": success,
+            "checked": True,
+            "message": (
+                f"Force updated {len(updated_services)} Swarm service(s)"
+                if success
+                else "Some Swarm services failed force update"
+            ),
+            "service_count": len(services),
+            "updated_services": updated_services,
+            "failed_services": failed_services,
+        }
+
+    def get_swarm_nodes(self) -> List[Dict[str, Any]]:
+        return self._request("GET", f"/endpoints/{self.endpoint_id}/docker/nodes")
+
+    def get_swarm_service_tasks(self, service_ids: List[str]) -> List[Dict[str, Any]]:
+        if not service_ids:
+            return []
+        filters = {"service": service_ids}
+        return self._request(
+            "GET",
+            f"/endpoints/{self.endpoint_id}/docker/tasks",
+            params={"filters": json.dumps(filters)},
+        )
+
+    @staticmethod
+    def _task_has_deploy_problem(task: Dict[str, Any]) -> bool:
+        status = task.get("Status") or {}
+        state = str(status.get("State") or "").lower()
+        desired_state = str(task.get("DesiredState") or "").lower()
+        if desired_state in {"shutdown", "complete"}:
+            return False
+        if state in {"failed", "rejected"}:
+            return True
+        if state == "shutdown" and desired_state != "shutdown":
+            return True
+        return False
+
+    def collect_swarm_stack_task_failures(
+        self, stack_name: str, services: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        services = services if services is not None else self.get_swarm_stack_services(stack_name)
+        if not services:
+            return {
+                "success": True,
+                "checked": False,
+                "message": f"No Swarm services found for Stack: {stack_name}",
+                "failures": [],
+            }
+
+        service_by_id: Dict[str, Dict[str, Any]] = {}
+        for service in services:
+            service_id = service.get("ID") or service.get("Id")
+            if service_id:
+                service_by_id[str(service_id)] = service
+
+        try:
+            tasks = self.get_swarm_service_tasks(list(service_by_id.keys()))
+        except Exception as exc:
+            logger.warning("Failed to list Swarm tasks for %s: %s", stack_name, exc)
+            return {
+                "success": False,
+                "checked": False,
+                "message": f"Unable to list Swarm tasks: {exc}",
+                "failures": [],
+            }
+
+        node_by_id: Dict[str, str] = {}
+        try:
+            nodes = self.get_swarm_nodes()
+            for node in nodes:
+                node_id = node.get("ID") or node.get("Id")
+                description = node.get("Description") or {}
+                hostname = description.get("Hostname") or node.get("Hostname")
+                if node_id:
+                    node_by_id[str(node_id)] = str(hostname or node_id)
+        except Exception as exc:
+            logger.warning("Failed to list Swarm nodes for %s: %s", stack_name, exc)
+
+        failures: List[Dict[str, Any]] = []
+        for task in tasks:
+            if not self._task_has_deploy_problem(task):
+                continue
+            service_id = str(task.get("ServiceID") or "")
+            service = service_by_id.get(service_id) or {}
+            spec = service.get("Spec") or {}
+            task_template = spec.get("TaskTemplate") or {}
+            container_spec = task_template.get("ContainerSpec") or {}
+            status = task.get("Status") or {}
+            node_id = str(task.get("NodeID") or "")
+            failures.append(
+                {
+                    "task_id": task.get("ID") or task.get("Id"),
+                    "service": spec.get("Name") or service_id or "unknown",
+                    "service_id": service_id,
+                    "node_id": node_id,
+                    "node": node_by_id.get(node_id, node_id or "unknown"),
+                    "image": container_spec.get("Image") or "",
+                    "state": status.get("State") or "",
+                    "desired_state": task.get("DesiredState") or "",
+                    "error": status.get("Err") or status.get("Message") or "",
+                }
+            )
+
+        return {
+            "success": not failures,
+            "checked": True,
+            "message": (
+                "No failed Swarm tasks found"
+                if not failures
+                else f"Found {len(failures)} failed Swarm task(s)"
+            ),
+            "failures": failures,
+        }
+
     def get_stack_compose_containers(self, stack_name: str) -> List[Dict[str, Any]]:
         """Portainer standalone Compose Stack 下的容器（非 Swarm service）。"""
         for project in self._compose_project_name_candidates(stack_name):
@@ -806,7 +1046,15 @@ class PortainerClient:
 
     def get_stack_services(self, stack_name: str) -> List[Dict[str, Any]]:
         """返回 Stack 关联工作负载：优先 Swarm service，否则 Compose 容器。"""
-        swarm_services = self.get_swarm_stack_services(stack_name)
+        try:
+            swarm_services = self.get_swarm_stack_services(stack_name)
+        except Exception as exc:
+            logger.info(
+                "Unable to list Swarm services for %s, falling back to Compose containers: %s",
+                stack_name,
+                exc,
+            )
+            swarm_services = []
         if swarm_services:
             for service in swarm_services:
                 service["workload_kind"] = "swarm"
@@ -879,7 +1127,20 @@ class PortainerClient:
                 len(services),
             )
 
-        success = not mismatched_revision_services and missing_revision_count == 0
+        task_diagnostics: Optional[Dict[str, Any]] = None
+        if workload_kind == "swarm":
+            task_diagnostics = self.collect_swarm_stack_task_failures(stack_name, services)
+
+        has_task_failures = bool(
+            task_diagnostics
+            and task_diagnostics.get("checked")
+            and not task_diagnostics.get("success")
+        )
+        success = (
+            not mismatched_revision_services
+            and missing_revision_count == 0
+            and not has_task_failures
+        )
         kind_label = "container(s)" if workload_kind == "compose" else "service(s)"
         return {
             "success": success,
@@ -887,7 +1148,11 @@ class PortainerClient:
             "message": (
                 f"Verified {len(services)} {kind_label} for Stack: {stack_name}"
                 if success
-                else "Some Stack services did not receive the expected deploy revision"
+                else (
+                    task_diagnostics.get("message")
+                    if has_task_failures and task_diagnostics
+                    else "Some Stack services did not receive the expected deploy revision"
+                )
             ),
             "service_count": len(services),
             "workload_kind": workload_kind,
@@ -895,6 +1160,7 @@ class PortainerClient:
             "matching_revision_services": matching_revision_services,
             "missing_revision_count": missing_revision_count,
             "mismatched_revision_services": mismatched_revision_services,
+            "task_diagnostics": task_diagnostics,
         }
 
     def stop_container(self, container_name: str) -> Dict[str, Any]:

@@ -16,6 +16,8 @@ class FakePortainerClient(PortainerClient):
         self.stacks = [{"Id": 42, "Name": "demo", "EndpointId": 7}]
         self.stack_file = "services:\n  app:\n    image: repo/app:latest\n"
         self.delete_error = None
+        self.force_update_error = None
+        self.services_error = None
         self.services = [
             {
                 "ID": "svc1",
@@ -26,6 +28,13 @@ class FakePortainerClient(PortainerClient):
                         "ContainerSpec": {"Image": "repo/app:latest@sha256:new"}
                     },
                 },
+            }
+        ]
+        self.tasks = []
+        self.nodes = [
+            {
+                "ID": "node1",
+                "Description": {"Hostname": "worker-1"},
             }
         ]
         self.compose_containers = [
@@ -61,7 +70,17 @@ class FakePortainerClient(PortainerClient):
             self.stacks = []
             return {}
         if method == "GET" and endpoint == "/endpoints/7/docker/services":
+            if self.services_error:
+                raise self.services_error
             return list(self.services)
+        if method == "PUT" and endpoint == "/endpoints/7/forceupdateservice":
+            if self.force_update_error:
+                raise self.force_update_error
+            return {}
+        if method == "GET" and endpoint == "/endpoints/7/docker/tasks":
+            return list(self.tasks)
+        if method == "GET" and endpoint == "/endpoints/7/docker/nodes":
+            return list(self.nodes)
         if method == "GET" and endpoint == "/endpoints/7/docker/containers/json":
             filters = kwargs.get("params", {}).get("filters")
             if filters and "com.docker.compose.project=demo" in filters:
@@ -76,14 +95,111 @@ class PortainerClientTests(unittest.TestCase):
 
         result = client.update_stack(42, client.stack_file, stack_name="demo")
 
-        put_calls = [call for call in client.calls if call[0] == "PUT"]
-        self.assertEqual(len(put_calls), 1)
-        payload = put_calls[0][2]["json"]
+        stack_put_calls = [
+            call for call in client.calls if call[0] == "PUT" and call[1] == "/stacks/42"
+        ]
+        self.assertEqual(len(stack_put_calls), 1)
+        payload = stack_put_calls[0][2]["json"]
         self.assertTrue(payload["PullImage"])
+        self.assertTrue(payload["RepullImageAndRedeploy"])
         self.assertFalse(payload["Prune"])
         self.assertEqual(result["stack_id"], 42)
         self.assertEqual(result["stack_name"], "demo")
         self.assertTrue(result["pull_image"])
+        self.assertTrue(result["repull_image_and_redeploy"])
+
+    def test_extract_mutable_compose_images_skips_digest_and_build_only(self):
+        content = """
+services:
+  latest:
+    image: repo/app:latest
+  implicit:
+    image: repo/worker
+  pinned:
+    image: repo/api@sha256:abc
+  build_only:
+    build: .
+  empty:
+    image: ""
+"""
+
+        result = PortainerClient.extract_mutable_compose_images(content)
+
+        self.assertEqual(
+            result,
+            [
+                {"service": "latest", "image": "repo/app:latest"},
+                {"service": "implicit", "image": "repo/worker"},
+            ],
+        )
+
+    def test_update_stack_force_updates_swarm_services(self):
+        client = FakePortainerClient()
+        client.services.append(
+            {
+                "ID": "svc2",
+                "Spec": {
+                    "Name": "demo_worker",
+                    "Labels": {"app2docker.deploy.revision": "task-1"},
+                    "TaskTemplate": {
+                        "ContainerSpec": {"Image": "repo/worker:latest@sha256:new"}
+                    },
+                },
+            }
+        )
+
+        result = client.update_stack(42, client.stack_file, stack_name="demo")
+
+        force_calls = [
+            call
+            for call in client.calls
+            if call[0] == "PUT" and call[1] == "/endpoints/7/forceupdateservice"
+        ]
+        self.assertEqual(len(force_calls), 2)
+        payloads = [call[2]["json"] for call in force_calls]
+        self.assertEqual(
+            payloads,
+            [
+                {"ServiceID": "svc1", "PullImage": True},
+                {"ServiceID": "svc2", "PullImage": True},
+            ],
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["force_update"]["service_count"], 2)
+
+    def test_update_stack_fails_when_force_update_fails(self):
+        client = FakePortainerClient()
+        client.force_update_error = Exception("pull denied")
+
+        result = client.update_stack(42, client.stack_file, stack_name="demo")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(len(result["force_update"]["failed_services"]), 1)
+        self.assertIn("pull denied", result["force_update"]["failed_services"][0]["error"])
+
+    def test_update_stack_skips_force_update_when_no_swarm_services(self):
+        client = FakePortainerClient()
+        client.services = []
+
+        result = client.update_stack(42, client.stack_file, stack_name="demo")
+
+        force_calls = [
+            call
+            for call in client.calls
+            if call[0] == "PUT" and call[1] == "/endpoints/7/forceupdateservice"
+        ]
+        self.assertEqual(force_calls, [])
+        self.assertTrue(result["success"])
+        self.assertFalse(result["force_update"]["checked"])
+
+    def test_update_stack_treats_non_swarm_endpoint_as_compose(self):
+        client = FakePortainerClient()
+        client.services_error = Exception("This node is not a swarm manager")
+
+        result = client.update_stack(42, client.stack_file, stack_name="demo")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["force_update"]["checked"])
 
     def test_remove_stack_resolves_name_to_id_and_waits_until_gone(self):
         client = FakePortainerClient()
@@ -154,7 +270,9 @@ services:
         self.assertTrue(result["success"])
         self.assertTrue(result["revision_injected"])
         self.assertEqual(result["revision_service_count"], 1)
-        put_payload = [call for call in client.calls if call[0] == "PUT"][0][2]["json"]
+        put_payload = [
+            call for call in client.calls if call[0] == "PUT" and call[1] == "/stacks/42"
+        ][0][2]["json"]
         self.assertIn("app2docker.deploy.revision", put_payload["StackFileContent"])
 
     def test_verify_stack_services_reports_service_images(self):
@@ -181,6 +299,32 @@ services:
         self.assertFalse(result["success"])
         self.assertEqual(result["missing_revision_count"], 1)
 
+    def test_verify_stack_services_reports_failed_task_details(self):
+        client = FakePortainerClient()
+        client.tasks = [
+            {
+                "ID": "task1",
+                "ServiceID": "svc1",
+                "NodeID": "node1",
+                "DesiredState": "running",
+                "Status": {
+                    "State": "rejected",
+                    "Err": "No such image: repo/app:latest",
+                },
+            }
+        ]
+
+        result = client.verify_stack_services(
+            "demo", expected_revision="task-1", min_revision_services=1
+        )
+
+        self.assertFalse(result["success"])
+        failures = result["task_diagnostics"]["failures"]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["node"], "worker-1")
+        self.assertEqual(failures[0]["service"], "demo_app")
+        self.assertIn("No such image", failures[0]["error"])
+
     def test_get_stack_services_falls_back_to_compose_containers(self):
         client = FakePortainerClient()
         client.services = []
@@ -190,6 +334,15 @@ services:
         self.assertEqual(len(workloads), 1)
         self.assertEqual(workloads[0]["workload_kind"], "compose")
         self.assertEqual(workloads[0]["Spec"]["Name"], "web")
+
+    def test_get_stack_services_falls_back_when_swarm_services_error(self):
+        client = FakePortainerClient()
+        client.services_error = Exception("This node is not a swarm manager")
+
+        workloads = client.get_stack_services("demo")
+
+        self.assertEqual(len(workloads), 1)
+        self.assertEqual(workloads[0]["workload_kind"], "compose")
 
     def test_verify_stack_services_accepts_compose_containers(self):
         client = FakePortainerClient()

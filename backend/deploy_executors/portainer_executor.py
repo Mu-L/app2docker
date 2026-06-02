@@ -274,6 +274,16 @@ class PortainerExecutor(DeployExecutor):
                         f"[Portainer] Stack 策略: {stack_strategy}, selected_stack_id={selected_stack_id or '-'}, stack_name={stack_name}"
                     )
 
+                compose_images = client.extract_mutable_compose_images(compose_content)
+                if compose_images and update_status_callback:
+                    image_preview = ", ".join(
+                        f"{item['service']}={item['image']}" for item in compose_images[:8]
+                    )
+                    more = "" if len(compose_images) <= 8 else f"，另有 {len(compose_images) - 8} 个"
+                    update_status_callback(
+                        f"[Portainer] 解析到需拉取的镜像: {image_preview}{more}"
+                    )
+
                 compose_content, revision_injected, revision_service_count = (
                     client.inject_deploy_revision(compose_content, task_id)
                 )
@@ -355,6 +365,24 @@ class PortainerExecutor(DeployExecutor):
                     result.setdefault("host_type", "portainer")
                     result.setdefault("deploy_method", "portainer_api")
                     result.setdefault("host_name", target_name)
+                    if update_status_callback:
+                        force_update = result.get("force_update")
+                        if force_update:
+                            if force_update.get("checked"):
+                                update_status_callback(
+                                    "[Portainer] Swarm 服务强制更新: "
+                                    f"{len(force_update.get('updated_services') or [])}/{force_update.get('service_count') or 0} 个服务已触发"
+                                )
+                                failed_services = force_update.get("failed_services") or []
+                                for failed in failed_services[:5]:
+                                    update_status_callback(
+                                        "[Portainer] 服务强制更新失败: "
+                                        f"{failed.get('service')} ({failed.get('service_id') or '-'}) - {failed.get('error')}"
+                                    )
+                            else:
+                                update_status_callback(
+                                    "[Portainer] 未检测到 Swarm service，跳过服务级强制更新"
+                                )
 
                 if result.get("success"):
                     verification = None
@@ -374,6 +402,16 @@ class PortainerExecutor(DeployExecutor):
                         update_status_callback(
                             f"[Portainer] Stack 服务校验: {verification.get('message')}"
                         )
+                        task_diagnostics = verification.get("task_diagnostics") or {}
+                        for failure in (task_diagnostics.get("failures") or [])[:8]:
+                            update_status_callback(
+                                "[Portainer] 失败任务: "
+                                f"service={failure.get('service')}, "
+                                f"node={failure.get('node')}({failure.get('node_id') or '-'}), "
+                                f"image={failure.get('image') or '-'}, "
+                                f"state={failure.get('state')}, "
+                                f"error={failure.get('error') or '-'}"
+                            )
                     if verification and verification.get("checked") and not verification.get("success"):
                         result["success"] = False
                         result["message"] = (
