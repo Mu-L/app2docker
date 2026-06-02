@@ -115,14 +115,44 @@ export function usePipelineMultiService({
     });
   const savingMultiServiceConfig = ref(false);
   const parsingDockerfileForMultiService = ref(false);
+  const serviceRowKeys = ref([]);
+  let serviceRowKeySeed = 0;
+
+  function createServiceRowKey() {
+    serviceRowKeySeed += 1;
+    return `service-row-${serviceRowKeySeed}`;
+  }
+
+  function syncServiceRowKeys() {
+    const serviceCount = multiServiceFormData.value.selected_services.length;
+    while (serviceRowKeys.value.length < serviceCount) {
+      serviceRowKeys.value.push(createServiceRowKey());
+    }
+    if (serviceRowKeys.value.length > serviceCount) {
+      serviceRowKeys.value.splice(serviceCount);
+    }
+  }
+
+  function resetServiceRowKeys() {
+    serviceRowKeys.value = multiServiceFormData.value.selected_services.map(
+      () => createServiceRowKey()
+    );
+  }
+
+  function getServiceRowKey(index) {
+    syncServiceRowKeys();
+    return serviceRowKeys.value[index] || `service-row-fallback-${index}`;
+  }
 
   function loadFromPipeline(pipeline) {
     pipelineRef.value = pipeline;
     if (externalFormData) {
       ensureMultiServiceFormState(multiServiceFormData.value);
+      syncServiceRowKeys();
       return;
     }
     multiServiceFormData.value = initFormFromPipeline(pipeline);
+    resetServiceRowKeys();
   }
 
   function resolvePipeline() {
@@ -208,6 +238,7 @@ export function usePipelineMultiService({
       multiServiceFormData.value.selected_services.length + 1
     }`;
     multiServiceFormData.value.selected_services.push(newServiceName);
+    serviceRowKeys.value.push(createServiceRowKey());
     multiServiceFormData.value.service_push_config[newServiceName] = {
       enabled: true,
       push: false,
@@ -219,6 +250,7 @@ export function usePipelineMultiService({
   function removeServiceFromMultiConfig(index) {
     const serviceName = multiServiceFormData.value.selected_services[index];
     multiServiceFormData.value.selected_services.splice(index, 1);
+    serviceRowKeys.value.splice(index, 1);
     if (multiServiceFormData.value.service_push_config[serviceName]) {
       delete multiServiceFormData.value.service_push_config[serviceName];
     }
@@ -354,9 +386,11 @@ export function usePipelineMultiService({
       }
       multiServiceFormData.value.selected_services = [];
       multiServiceFormData.value.service_push_config = {};
+      serviceRowKeys.value = [];
       servicesList.forEach((service) => {
         const serviceName = service.name;
         multiServiceFormData.value.selected_services.push(serviceName);
+        serviceRowKeys.value.push(createServiceRowKey());
         multiServiceFormData.value.service_push_config[serviceName] = {
           enabled: true,
           push: false,
@@ -482,6 +516,7 @@ export function usePipelineMultiService({
     loadFromPipeline,
     addServiceToMultiConfig,
     removeServiceFromMultiConfig,
+    getServiceRowKey,
     updateServiceName,
     updateServiceImageName,
     updateServiceTag,

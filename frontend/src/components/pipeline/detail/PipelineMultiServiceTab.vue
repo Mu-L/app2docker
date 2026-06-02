@@ -195,7 +195,7 @@
                   v-for="(
                     serviceName, index
                   ) in multiServiceFormData.selected_services"
-                  :key="`service-${index}-${serviceName}`"
+                  :key="getServiceRowKey(index)"
                   class="col-span-full"
                 >
                   <div
@@ -448,6 +448,7 @@ const {
   loadFromPipeline,
   addServiceToMultiConfig,
   removeServiceFromMultiConfig,
+  getServiceRowKey,
   updateServiceName,
   updateServiceImageName,
   updateServiceTag,
