@@ -64,7 +64,10 @@ from backend.config import (
 )
 from backend.utils import get_safe_filename
 from backend.webhook_trigger import (
+    build_webhook_dedupe_key,
+    get_webhook_event,
     get_branch_mapping_value,
+    is_build_webhook_event,
     matches_any_branch_rule,
     resolve_branch_tags,
     resolve_pipeline_webhook_branch,
@@ -7979,6 +7982,23 @@ async def webhook_trigger(webhook_token: str, request: Request):
         except:
             payload = {}
 
+        webhook_event_meta = get_webhook_event(dict(request.headers))
+        webhook_event_name = webhook_event_meta.get("event", "")
+        webhook_platform = webhook_event_meta.get("platform", "unknown")
+        if not is_build_webhook_event(webhook_event_name):
+            print(
+                f"⚠️ 忽略非构建类 webhook 事件: platform={webhook_platform}, event={webhook_event_name}, pipeline={pipeline.get('name')}"
+            )
+            return JSONResponse(
+                {
+                    "message": "非 Push/Tag Push 事件，已忽略触发",
+                    "pipeline": pipeline.get("name"),
+                    "event": webhook_event_name,
+                    "platform": webhook_platform,
+                    "ignored": True,
+                }
+            )
+
         # 提取分支信息（不同平台格式不同）
         webhook_branch = None
         webhook_tag = None
@@ -8047,6 +8067,36 @@ async def webhook_trigger(webhook_token: str, request: Request):
             pipeline_id = pipeline["pipeline_id"]
             branch = webhook_tag
             tags = [webhook_tag]
+            webhook_dedupe = build_webhook_dedupe_key(
+                pipeline_id,
+                payload.get("ref") or f"refs/tags/{webhook_tag}",
+                payload,
+                dict(request.headers),
+            )
+            delivery_result = manager.reserve_webhook_delivery(
+                webhook_dedupe["dedupe_key"],
+                pipeline_id,
+                event=webhook_dedupe.get("event"),
+                platform=webhook_dedupe.get("platform"),
+                ref=webhook_dedupe.get("ref"),
+                commit_sha=webhook_dedupe.get("commit_sha"),
+                delivery_id=webhook_dedupe.get("delivery_id"),
+            )
+            if delivery_result.get("duplicate"):
+                print(
+                    f"🚫 重复 webhook 已忽略: pipeline={pipeline.get('name')}, ref={webhook_dedupe.get('ref')}, task_id={delivery_result.get('task_id')}"
+                )
+                return JSONResponse(
+                    {
+                        "message": "重复 Webhook 已忽略",
+                        "status": "duplicate",
+                        "pipeline": pipeline.get("name"),
+                        "task_id": delivery_result.get("task_id"),
+                        "tag": webhook_tag,
+                        "ref_type": "tag",
+                        "ref_name": webhook_tag,
+                    }
+                )
             task_config = pipeline_to_task_config(
                 pipeline,
                 trigger_source="webhook",
@@ -8073,6 +8123,9 @@ async def webhook_trigger(webhook_token: str, request: Request):
                 )
 
             task_id = build_manager._trigger_task_from_config(task_config)
+            manager.complete_webhook_delivery(
+                webhook_dedupe["dedupe_key"], task_id, status="created"
+            )
             task_snapshot = build_manager.task_manager.get_task(task_id)
             is_queued = task_snapshot.get("status") == "pending"
             queue_length = manager.get_queue_length(pipeline_id)
@@ -8268,6 +8321,36 @@ async def webhook_trigger(webhook_token: str, request: Request):
         # 获取标签列表（支持单个标签或多个标签）
         tags = resolve_branch_tags(branch_for_tag_mapping, branch_tag_mapping)
 
+        webhook_dedupe = build_webhook_dedupe_key(
+            pipeline["pipeline_id"],
+            payload.get("ref") or f"refs/heads/{branch}",
+            payload,
+            dict(request.headers),
+        )
+        delivery_result = manager.reserve_webhook_delivery(
+            webhook_dedupe["dedupe_key"],
+            pipeline["pipeline_id"],
+            event=webhook_dedupe.get("event"),
+            platform=webhook_dedupe.get("platform"),
+            ref=webhook_dedupe.get("ref"),
+            commit_sha=webhook_dedupe.get("commit_sha"),
+            delivery_id=webhook_dedupe.get("delivery_id"),
+        )
+        if delivery_result.get("duplicate"):
+            print(
+                f"🚫 重复 webhook 已忽略: pipeline={pipeline.get('name')}, ref={webhook_dedupe.get('ref')}, task_id={delivery_result.get('task_id')}"
+            )
+            return JSONResponse(
+                {
+                    "message": "重复 Webhook 已忽略",
+                    "status": "duplicate",
+                    "pipeline": pipeline.get("name"),
+                    "task_id": delivery_result.get("task_id"),
+                    "branch": branch,
+                    "tags": tags,
+                }
+            )
+
         # 为每个标签创建任务
         from backend.handlers import pipeline_to_task_config
 
@@ -8372,6 +8455,13 @@ async def webhook_trigger(webhook_token: str, request: Request):
                 )
         
         # 提取 webhook 相关信息
+        if all_task_ids:
+            manager.complete_webhook_delivery(
+                webhook_dedupe["dedupe_key"], all_task_ids[0], status="created"
+            )
+        else:
+            manager.release_webhook_delivery(webhook_dedupe["dedupe_key"])
+
         webhook_info = {
             "branch": branch,
             "tags": tags,  # 添加标签列表信息

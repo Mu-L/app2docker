@@ -470,6 +470,34 @@ class PipelineTaskHistory(Base):
     )
 
 
+class WebhookDelivery(Base):
+    """Webhook delivery dedupe table."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key = Column(String(128), unique=True, nullable=False)
+    pipeline_id = Column(String(36), ForeignKey("pipelines.pipeline_id"), nullable=False)
+    task_id = Column(String(36), ForeignKey("tasks.task_id"), nullable=True)
+    event = Column(String(100))
+    platform = Column(String(50))
+    ref = Column(String(255))
+    commit_sha = Column(String(128))
+    delivery_id = Column(String(255))
+    status = Column(String(50), default="reserved")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    pipeline = relationship("Pipeline")
+    task = relationship("Task")
+
+    __table_args__ = (
+        Index("idx_webhook_delivery_key", "dedupe_key"),
+        Index("idx_webhook_delivery_pipeline", "pipeline_id"),
+        Index("idx_webhook_delivery_created", "created_at"),
+    )
+
+
 class AgentHost(Base):
     """Agent主机表"""
 

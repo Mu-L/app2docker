@@ -1,5 +1,7 @@
 from backend.webhook_trigger import (
+    build_webhook_dedupe_key,
     get_branch_mapping_value,
+    is_build_webhook_event,
     matches_branch_rule,
     resolve_branch_tags,
     resolve_pipeline_webhook_branch,
@@ -104,3 +106,33 @@ def test_branch_tag_mapping_prefers_exact_match_then_wildcard():
 
     assert get_branch_mapping_value("dev", mapping) == "exact"
     assert get_branch_mapping_value("dev1", mapping) == "wildcard"
+
+
+def test_webhook_event_filter_allows_only_push_like_events():
+    assert is_build_webhook_event("push")
+    assert is_build_webhook_event("Push Hook")
+    assert is_build_webhook_event("Tag Push Hook")
+    assert not is_build_webhook_event("Merge Request Hook")
+    assert not is_build_webhook_event("pull_request")
+    assert not is_build_webhook_event("Note Hook")
+
+
+def test_webhook_dedupe_key_is_stable_for_same_commit():
+    payload = {"ref": "refs/heads/master", "after": "abc123"}
+    headers = {
+        "x-gitee-event": "Push Hook",
+        "x-gitee-delivery": "delivery-1",
+    }
+
+    first = build_webhook_dedupe_key("pipeline-1", payload["ref"], payload, headers)
+    second = build_webhook_dedupe_key("pipeline-1", payload["ref"], payload, headers)
+    changed = build_webhook_dedupe_key(
+        "pipeline-1",
+        payload["ref"],
+        {"ref": "refs/heads/master", "after": "def456"},
+        headers,
+    )
+
+    assert first["dedupe_key"] == second["dedupe_key"]
+    assert first["dedupe_key"] != changed["dedupe_key"]
+    assert first["commit_sha"] == "abc123"

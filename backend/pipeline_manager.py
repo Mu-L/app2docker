@@ -6,10 +6,16 @@ import hmac
 import hashlib
 import threading
 from datetime import datetime
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from backend.database import get_db_session, init_db
-from backend.models import Pipeline, PipelinePermission, PipelineTaskHistory
+from backend.models import (
+    Pipeline,
+    PipelinePermission,
+    PipelineTaskHistory,
+    WebhookDelivery,
+)
 
 # 确保数据库已初始化
 try:
@@ -1330,6 +1336,129 @@ class PipelineManager:
                 "config_hash": config_hash,
                 "timestamp": datetime.now(),
             }
+
+    def reserve_webhook_delivery(
+        self,
+        dedupe_key: str,
+        pipeline_id: str,
+        event: str = "",
+        platform: str = "",
+        ref: str = "",
+        commit_sha: str = "",
+        delivery_id: str = "",
+        stale_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """Reserve a webhook delivery idempotently before creating tasks."""
+        if not dedupe_key or not pipeline_id:
+            return {"reserved": True, "duplicate": False}
+
+        db = get_db_session()
+        now = datetime.now()
+        try:
+            delivery = WebhookDelivery(
+                dedupe_key=dedupe_key,
+                pipeline_id=pipeline_id,
+                event=event or "",
+                platform=platform or "",
+                ref=ref or "",
+                commit_sha=commit_sha or "",
+                delivery_id=delivery_id or "",
+                status="reserved",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(delivery)
+            db.commit()
+            return {"reserved": True, "duplicate": False}
+        except IntegrityError:
+            db.rollback()
+            existing = (
+                db.query(WebhookDelivery)
+                .filter(WebhookDelivery.dedupe_key == dedupe_key)
+                .first()
+            )
+            if not existing:
+                return {"reserved": False, "duplicate": True}
+
+            age = (
+                now - (existing.updated_at or existing.created_at or now)
+            ).total_seconds()
+            if age < stale_seconds:
+                return {
+                    "reserved": False,
+                    "duplicate": True,
+                    "task_id": existing.task_id,
+                    "status": existing.status,
+                    "created_at": (
+                        existing.created_at.isoformat()
+                        if existing.created_at
+                        else None
+                    ),
+                }
+
+            existing.pipeline_id = pipeline_id
+            existing.event = event or ""
+            existing.platform = platform or ""
+            existing.ref = ref or ""
+            existing.commit_sha = commit_sha or ""
+            existing.delivery_id = delivery_id or ""
+            existing.task_id = None
+            existing.status = "reserved"
+            existing.updated_at = now
+            db.commit()
+            return {"reserved": True, "duplicate": False, "stale_reused": True}
+        except Exception as e:
+            db.rollback()
+            print(f"⚠️ Webhook delivery 占位失败，继续执行: {e}")
+            return {"reserved": True, "duplicate": False, "error": str(e)}
+        finally:
+            db.close()
+
+    def complete_webhook_delivery(
+        self, dedupe_key: str, task_id: str, status: str = "created"
+    ) -> None:
+        """Attach the created task to a reserved webhook delivery."""
+        if not dedupe_key:
+            return
+        db = get_db_session()
+        try:
+            delivery = (
+                db.query(WebhookDelivery)
+                .filter(WebhookDelivery.dedupe_key == dedupe_key)
+                .first()
+            )
+            if not delivery:
+                return
+            delivery.task_id = task_id
+            delivery.status = status
+            delivery.updated_at = datetime.now()
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"⚠️ Webhook delivery 回填失败: {e}")
+        finally:
+            db.close()
+
+    def release_webhook_delivery(self, dedupe_key: str) -> None:
+        """Release an unused webhook delivery reservation."""
+        if not dedupe_key:
+            return
+        db = get_db_session()
+        try:
+            delivery = (
+                db.query(WebhookDelivery)
+                .filter(WebhookDelivery.dedupe_key == dedupe_key)
+                .first()
+            )
+            if not delivery or delivery.task_id:
+                return
+            db.delete(delivery)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"⚠️ Webhook delivery 释放失败: {e}")
+        finally:
+            db.close()
 
     def check_running_task_config(self, pipeline_id: str, task_config: dict) -> bool:
         """
