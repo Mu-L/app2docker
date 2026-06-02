@@ -445,6 +445,32 @@ def parse_dockerfile_services(dockerfile_content: str) -> tuple:
     return services, global_params
 
 
+def resolve_multi_service_stage_selection(selected_services: list, services: list):
+    """Match configured services to Dockerfile stages by exact name only."""
+    selected_services = selected_services or []
+    services = services or []
+    stage_by_lower_name = {}
+    for service in services:
+        if not isinstance(service, dict):
+            continue
+        stage_name = service.get("name")
+        if stage_name:
+            stage_by_lower_name[str(stage_name).lower()] = stage_name
+
+    service_to_stage_map = {}
+    matched_services = []
+    missing_services = []
+    for service_name in selected_services:
+        stage_name = stage_by_lower_name.get(str(service_name).lower())
+        if stage_name:
+            service_to_stage_map[service_name] = stage_name
+            matched_services.append(service_name)
+        else:
+            missing_services.append(service_name)
+
+    return service_to_stage_map, matched_services, missing_services
+
+
 class App2DockerHandler(BaseHTTPRequestHandler):
     server_version = "App2Docker/1.0"
 
@@ -3235,6 +3261,8 @@ logs/
                     # 从 Dockerfile 中解析实际的阶段名称映射
                     dockerfile_path = os.path.join(build_context, dockerfile_relative)
                     service_to_stage_map = {}  # 服务名称到 Dockerfile 阶段的映射
+                    matched_services = []
+                    missing_services = list(selected_services or [])
 
                     if os.path.exists(dockerfile_path):
                         try:
@@ -3242,21 +3270,13 @@ logs/
                                 dockerfile_content = f.read()
                             services, _ = parse_dockerfile_services(dockerfile_content)
                             if services and len(services) > 0:
-                                # 构建服务名称到阶段的映射
-                                # ✅ 配置的服务：只做「精确匹配」，不再做模糊/索引匹配
-                                # 这样可以避免 app2docker 误匹配到 app2docker-agent 等情况
-                                for service_name in selected_services:
-                                    for service in services:
-                                        stage_name = service.get("name")
-                                        if (
-                                            stage_name
-                                            and service_name.lower()
-                                            == stage_name.lower()
-                                        ):
-                                            service_to_stage_map[service_name] = (
-                                                stage_name
-                                            )
-                                            break
+                                (
+                                    service_to_stage_map,
+                                    matched_services,
+                                    missing_services,
+                                ) = resolve_multi_service_stage_selection(
+                                    selected_services, services
+                                )
 
                                 log(
                                     f"🔍 从 Dockerfile 解析到阶段映射: {service_to_stage_map}\n"
@@ -3272,7 +3292,21 @@ logs/
 
                             log(f"详细错误:\n{traceback.format_exc()}\n")
 
-                    for service_name in selected_services:
+                    for missing_service in missing_services:
+                        log(
+                            f"⚠️ 服务 '{missing_service}' 在当前 Dockerfile 中未找到对应阶段，已跳过\n"
+                        )
+
+                    if not matched_services:
+                        skipped_services = ", ".join(
+                            str(service)
+                            for service in (missing_services or selected_services or [])
+                        )
+                        raise RuntimeError(
+                            f"当前分支未找到任何匹配的服务阶段，已跳过服务: {skipped_services}"
+                        )
+
+                    for service_name in matched_services:
                         log(f"\n{'='*60}\n")
                         log(f"🚀 开始构建服务: {service_name}\n")
 
@@ -3297,10 +3331,6 @@ logs/
 
                         # 确定要构建的 target stage
                         target_stage = service_to_stage_map.get(service_name)
-                        if not target_stage:
-                            log(
-                                f"⚠️ 服务 '{service_name}' 没有对应的 Dockerfile 阶段，将构建默认阶段（不指定 target）\n"
-                            )
 
                         try:
                             build_kwargs = {
@@ -3308,12 +3338,8 @@ logs/
                                 "tag": service_tag,
                                 "dockerfile": dockerfile_relative,
                             }
-                            # 只有在有明确的 target stage 时才添加 target 参数
-                            if target_stage:
-                                build_kwargs["target"] = target_stage
-                                log(f"🚀 构建目标阶段: {target_stage}\n")
-                            else:
-                                log(f"🚀 构建默认阶段（不指定 target）\n")
+                            build_kwargs["target"] = target_stage
+                            log(f"🚀 构建目标阶段: {target_stage}\n")
 
                             build_stream = docker_builder.build_image(**build_kwargs)
                             log(f"✅ Docker 构建流已启动\n")
