@@ -284,12 +284,12 @@ class PortainerExecutor(DeployExecutor):
                         f"[Portainer] 解析到需拉取的镜像: {image_preview}{more}"
                     )
 
-                compose_content, revision_injected, revision_service_count = (
-                    client.inject_deploy_revision(compose_content, task_id)
+                compose_content, revision_removed, revision_service_count = (
+                    client.strip_deploy_revision(compose_content)
                 )
-                if revision_injected and update_status_callback:
+                if revision_removed and update_status_callback:
                     update_status_callback(
-                        f"[Portainer] 检测到非 digest 镜像引用，已注入发布 revision 以强制服务更新: {task_id} ({revision_service_count} 个服务)"
+                        f"[Portainer] 已移除历史发布 revision label ({revision_service_count} 个服务)"
                     )
                 
                 # 使用重试机制执行部署
@@ -316,8 +316,9 @@ class PortainerExecutor(DeployExecutor):
                         else:
                             result = client.deploy_stack(stack_name, compose_content)
                         result.setdefault("stack_name", stack_name)
-                        result["revision_injected"] = revision_injected or bool(
-                            result.get("revision_injected")
+                        result["revision_injected"] = False
+                        result["revision_removed"] = revision_removed or bool(
+                            result.get("revision_removed")
                         )
                         result["revision_service_count"] = max(
                             revision_service_count,
@@ -406,8 +407,8 @@ class PortainerExecutor(DeployExecutor):
                         verification = await asyncio.to_thread(
                             client.verify_stack_services,
                             result.get("stack_name") or stack_name,
-                            task_id if result.get("revision_injected") else None,
-                            result.get("revision_service_count") or 0,
+                            None,
+                            0,
                         )
                         if verification.get("success") or not verification.get("checked"):
                             break

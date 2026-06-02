@@ -338,62 +338,53 @@ services:
         with self.assertRaises(Exception):
             client.remove_stack(stack_name="demo", interval=0)
 
-    def test_inject_deploy_revision_only_for_non_digest_image_refs(self):
+    def test_strip_deploy_revision_removes_legacy_labels(self):
         content = """
 services:
   latest:
     image: repo/app:latest
+    labels:
+      app2docker.deploy.revision: task-1
+      keep: yes
+    deploy:
+      labels:
+        app2docker.deploy.revision: task-1
   implicit:
     image: repo/worker
+    labels:
+    - app2docker.deploy.revision=task-1
+    - keep=yes
   versioned:
     image: repo/api:v1
   pinned:
     image: repo/api@sha256:abc
 """
 
-        rendered, injected, count = PortainerClient.inject_deploy_revision(
-            content, "task-1"
-        )
+        rendered, removed, count = PortainerClient.strip_deploy_revision(content)
         parsed = yaml.safe_load(rendered)
 
-        self.assertTrue(injected)
-        self.assertEqual(count, 3)
-        self.assertEqual(
-            parsed["services"]["latest"]["deploy"]["labels"][
-                "app2docker.deploy.revision"
-            ],
-            "task-1",
+        self.assertTrue(removed)
+        self.assertEqual(count, 2)
+        self.assertNotIn(
+            "app2docker.deploy.revision",
+            parsed["services"]["latest"]["labels"],
         )
-        self.assertEqual(
-            parsed["services"]["latest"]["labels"]["app2docker.deploy.revision"],
-            "task-1",
-        )
-        self.assertEqual(
-            parsed["services"]["implicit"]["deploy"]["labels"][
-                "app2docker.deploy.revision"
-            ],
-            "task-1",
-        )
-        self.assertEqual(
-            parsed["services"]["versioned"]["deploy"]["labels"][
-                "app2docker.deploy.revision"
-            ],
-            "task-1",
-        )
-        self.assertNotIn("deploy", parsed["services"]["pinned"])
+        self.assertEqual(parsed["services"]["latest"]["labels"]["keep"], True)
+        self.assertNotIn("labels", parsed["services"]["latest"]["deploy"])
+        self.assertEqual(parsed["services"]["implicit"]["labels"], ["keep=yes"])
 
-    def test_deploy_stack_updates_existing_stack_with_revision_metadata(self):
+    def test_deploy_stack_updates_existing_stack_without_revision_metadata(self):
         client = FakePortainerClient()
 
         result = client.deploy_stack("demo", client.stack_file, revision="task-1")
 
         self.assertTrue(result["success"])
-        self.assertTrue(result["revision_injected"])
-        self.assertEqual(result["revision_service_count"], 1)
+        self.assertFalse(result["revision_injected"])
+        self.assertFalse(result["revision_removed"])
         put_payload = [
             call for call in client.calls if call[0] == "PUT" and call[1] == "/stacks/42"
         ][0][2]["json"]
-        self.assertIn("app2docker.deploy.revision", put_payload["StackFileContent"])
+        self.assertNotIn("app2docker.deploy.revision", put_payload["StackFileContent"])
 
     def test_verify_stack_services_reports_service_images(self):
         client = FakePortainerClient()
