@@ -3,6 +3,8 @@
 Portainer API 客户端
 用于连接 Portainer 和 Portainer Agent，执行部署操作
 """
+import copy
+import base64
 import re
 import requests
 import logging
@@ -380,6 +382,132 @@ class PortainerClient:
                 result.append({"name": key, "value": value})
         return result
 
+    @staticmethod
+    def _split_image_ref_for_pull(image: str) -> Tuple[str, str]:
+        ref = (image or "").strip()
+        if not ref:
+            raise ValueError("image ref is empty")
+        if "@sha256:" in ref:
+            raise ValueError("digest-pinned image refs are not pulled by tag")
+        last_slash = ref.rfind("/")
+        last_colon = ref.rfind(":")
+        if last_colon > last_slash:
+            return ref[:last_colon], ref[last_colon + 1 :]
+        return ref, "latest"
+
+    def pull_image(self, image: str) -> Dict[str, Any]:
+        """Pull an image tag through Portainer's Docker proxy."""
+        repository, tag = self._split_image_ref_for_pull(image)
+        url = f"{self.url}/endpoints/{self.endpoint_id}/docker/images/create"
+        headers = self._build_auth_headers()
+        registry_id = self.resolve_registry_id_for_image(image)
+        if registry_id is not None:
+            headers["X-Registry-Auth"] = base64.b64encode(
+                json.dumps({"registryId": registry_id}).encode("utf-8")
+            ).decode("utf-8")
+        try:
+            response = self.session.post(
+                url,
+                headers=headers,
+                params={"fromImage": repository, "tag": tag},
+                timeout=300,
+            )
+            if (
+                response.status_code == 401
+                and self.api_key
+                and self.api_key.count(".") == 2
+            ):
+                response = self.session.post(
+                    url,
+                    headers=self._build_auth_headers(force_mode="x_api_key"),
+                    params={"fromImage": repository, "tag": tag},
+                    timeout=300,
+                )
+            if not response.ok:
+                raise Exception(f"API 错误 ({response.status_code}): {response.text}")
+
+            errors: List[str] = []
+            statuses: List[str] = []
+            for line in response.text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if item.get("error"):
+                    errors.append(str(item.get("error")))
+                elif item.get("errorDetail"):
+                    errors.append(str(item.get("errorDetail")))
+                elif item.get("status"):
+                    statuses.append(str(item.get("status")))
+            if errors:
+                raise Exception("; ".join(errors))
+            return {
+                "success": True,
+                "image": image,
+                "repository": repository,
+                "tag": tag,
+                "registry_id": registry_id,
+                "status_count": len(statuses),
+                "last_status": statuses[-1] if statuses else "",
+            }
+        except requests.exceptions.Timeout:
+            raise Exception(f"拉取镜像超时: {image}")
+        except requests.exceptions.RequestException as exc:
+            raise Exception(f"拉取镜像失败: {image}: {exc}")
+
+    def resolve_registry_id_for_image(self, image: str) -> Optional[int]:
+        """Find a Portainer registry id that matches the image registry host."""
+        ref = (image or "").strip()
+        if "/" not in ref:
+            return None
+        registry_host = ref.split("/", 1)[0]
+        if "." not in registry_host and ":" not in registry_host and registry_host != "localhost":
+            return None
+        try:
+            registries = self._request(
+                "GET", f"/endpoints/{self.endpoint_id}/registries"
+            )
+        except Exception:
+            try:
+                registries = self._request("GET", "/registries")
+            except Exception as exc:
+                logger.info("Unable to resolve Portainer registry for %s: %s", image, exc)
+                return None
+        for registry in registries or []:
+            registry_url = str(
+                registry.get("URL") or registry.get("BaseURL") or registry.get("Name") or ""
+            ).strip()
+            registry_url = re.sub(r"^https?://", "", registry_url).rstrip("/")
+            if registry_url == registry_host:
+                try:
+                    return int(registry.get("Id"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def pull_images(self, image_refs: List[Dict[str, str]]) -> Dict[str, Any]:
+        pulled: List[Dict[str, Any]] = []
+        failed: List[Dict[str, str]] = []
+        seen = set()
+        for item in image_refs:
+            image = item.get("image")
+            if not image or image in seen:
+                continue
+            seen.add(image)
+            try:
+                pulled.append(self.pull_image(image))
+            except Exception as exc:
+                failed.append({"image": image, "error": str(exc)})
+        return {
+            "success": not failed,
+            "checked": bool(seen),
+            "pulled": pulled,
+            "failed": failed,
+        }
+
     def list_stacks(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/stacks", params={"endpointId": self.endpoint_id})
 
@@ -577,6 +705,7 @@ class PortainerClient:
             logger.warning("读取更新前 Stack 文件失败 (stack_id=%s): %s", stack_id, read_err)
 
         image_refs = self.extract_mutable_compose_images(compose_content)
+        pull_result = self.pull_images(image_refs)
         payload = {
             "StackFileContent": compose_content,
             "Env": self._split_env_pairs(env),
@@ -605,14 +734,25 @@ class PortainerClient:
 
         force_update_result = None
         if stack_name:
-            force_update_result = self.force_update_swarm_stack_services(stack_name)
+            force_update_result = self.force_update_stack_workloads(
+                stack_id, stack_name, payload, image_refs
+            )
             if force_update_result.get("checked") and not force_update_result.get("success"):
-                message = f"{message}；但 Swarm 服务强制更新失败: {force_update_result.get('message')}"
+                message = f"{message}；但工作负载强制更新失败: {force_update_result.get('message')}"
+        if pull_result.get("checked") and not pull_result.get("success"):
+            message = f"{message}；但镜像显式拉取失败"
         return {
             "success": not (
-                force_update_result
-                and force_update_result.get("checked")
-                and not force_update_result.get("success")
+                (
+                    force_update_result
+                    and force_update_result.get("checked")
+                    and not force_update_result.get("success")
+                )
+                or (
+                    pull_result
+                    and pull_result.get("checked")
+                    and not pull_result.get("success")
+                )
             ),
             "message": message,
             "stack_id": stack_id,
@@ -621,6 +761,7 @@ class PortainerClient:
             "pull_image": True,
             "repull_image_and_redeploy": True,
             "compose_images": image_refs,
+            "explicit_pull": pull_result,
             "force_update": force_update_result,
         }
 
@@ -798,8 +939,113 @@ class PortainerClient:
             params={"filters": json.dumps(filters)},
         )
 
-    def force_update_swarm_stack_services(self, stack_name: str) -> Dict[str, Any]:
-        """Force Swarm services in a stack to re-pull images and roll tasks."""
+    def force_update_stack_workloads(
+        self,
+        stack_id: int,
+        stack_name: str,
+        stack_payload: Dict[str, Any],
+        image_refs: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Force update Swarm services or standalone Compose containers for a Stack."""
+        swarm_result = self.force_update_swarm_stack_services(stack_name, image_refs)
+        if swarm_result.get("checked"):
+            return swarm_result
+        compose_result = self.refresh_compose_stack_containers(
+            stack_id, stack_name, stack_payload, image_refs
+        )
+        if compose_result.get("checked"):
+            return compose_result
+        return swarm_result
+
+    @staticmethod
+    def _service_version_index(service: Dict[str, Any]) -> Optional[int]:
+        version = service.get("Version") or {}
+        index = version.get("Index")
+        try:
+            return int(index)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _compose_service_name_from_swarm_service(
+        service: Dict[str, Any], stack_name: str
+    ) -> str:
+        spec = service.get("Spec") or {}
+        service_name = str(spec.get("Name") or "")
+        prefix = f"{stack_name}_"
+        if service_name.startswith(prefix):
+            return service_name[len(prefix) :]
+        return service_name
+
+    @classmethod
+    def _desired_image_for_swarm_service(
+        cls,
+        service: Dict[str, Any],
+        stack_name: str,
+        image_by_service: Dict[str, str],
+    ) -> Optional[str]:
+        if not image_by_service:
+            return None
+        spec = service.get("Spec") or {}
+        service_name = str(spec.get("Name") or "")
+        candidates = [
+            service_name,
+            cls._compose_service_name_from_swarm_service(service, stack_name),
+        ]
+        for candidate in candidates:
+            if candidate in image_by_service:
+                return image_by_service[candidate]
+        for compose_service, image in image_by_service.items():
+            if service_name.endswith(f"_{compose_service}"):
+                return image
+        if len(image_by_service) == 1:
+            return next(iter(image_by_service.values()))
+        return None
+
+    def update_swarm_service_spec(
+        self, service: Dict[str, Any], desired_image: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Update a Swarm service spec, optionally resetting Image from digest to tag."""
+        service_id = service.get("ID") or service.get("Id")
+        version_index = self._service_version_index(service)
+        spec = copy.deepcopy(service.get("Spec") or {})
+        if not service_id:
+            raise ValueError("Service ID is missing")
+        if version_index is None:
+            raise ValueError(f"Service version is missing: {service_id}")
+        if not spec:
+            raise ValueError(f"Service spec is missing: {service_id}")
+
+        task_template = spec.setdefault("TaskTemplate", {})
+        if not isinstance(task_template, dict):
+            task_template = {}
+            spec["TaskTemplate"] = task_template
+        container_spec = task_template.setdefault("ContainerSpec", {})
+        if not isinstance(container_spec, dict):
+            container_spec = {}
+            task_template["ContainerSpec"] = container_spec
+        if desired_image:
+            container_spec["Image"] = desired_image
+
+        try:
+            task_template["ForceUpdate"] = int(task_template.get("ForceUpdate") or 0) + 1
+        except (TypeError, ValueError):
+            task_template["ForceUpdate"] = 1
+
+        return self._request(
+            "POST",
+            f"/endpoints/{self.endpoint_id}/docker/services/{service_id}/update",
+            params={"version": version_index, "registryAuthFrom": "spec"},
+            json=spec,
+            timeout=60,
+        )
+
+    def force_update_swarm_stack_services(
+        self,
+        stack_name: str,
+        image_refs: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Force Swarm services in a stack to re-resolve images and roll tasks."""
         try:
             services = self.get_swarm_stack_services(stack_name)
         except Exception as exc:
@@ -837,12 +1083,20 @@ class PortainerClient:
                 "failed_services": [],
             }
 
+        image_by_service = {
+            item["service"]: item["image"]
+            for item in (image_refs or [])
+            if item.get("service") and item.get("image")
+        }
         updated_services: List[Dict[str, str]] = []
         failed_services: List[Dict[str, str]] = []
         for service in services:
             service_id = service.get("ID") or service.get("Id")
             spec = service.get("Spec") or {}
             service_name = spec.get("Name") or service_id or "unknown"
+            desired_image = self._desired_image_for_swarm_service(
+                service, stack_name, image_by_service
+            )
             if not service_id:
                 failed_services.append(
                     {
@@ -852,14 +1106,24 @@ class PortainerClient:
                 )
                 continue
             try:
-                self._request(
-                    "PUT",
-                    f"/endpoints/{self.endpoint_id}/forceupdateservice",
-                    json={"ServiceID": service_id, "PullImage": True},
-                    timeout=60,
-                )
+                if desired_image:
+                    self.update_swarm_service_spec(service, desired_image)
+                    method = "service_update"
+                else:
+                    self._request(
+                        "PUT",
+                        f"/endpoints/{self.endpoint_id}/forceupdateservice",
+                        json={"ServiceID": service_id, "PullImage": True},
+                        timeout=60,
+                    )
+                    method = "forceupdateservice"
                 updated_services.append(
-                    {"service": str(service_name), "service_id": str(service_id)}
+                    {
+                        "service": str(service_name),
+                        "service_id": str(service_id),
+                        "image": str(desired_image or ""),
+                        "method": method,
+                    }
                 )
             except Exception as exc:
                 logger.warning(
@@ -888,6 +1152,150 @@ class PortainerClient:
             "service_count": len(services),
             "updated_services": updated_services,
             "failed_services": failed_services,
+        }
+
+    def get_local_image_ids_by_ref(self, image_refs: List[str]) -> Dict[str, str]:
+        if not image_refs:
+            return {}
+        wanted = set(image_refs)
+        images = self._request("GET", f"/endpoints/{self.endpoint_id}/docker/images/json")
+        found: Dict[str, str] = {}
+        for image in images:
+            image_id = image.get("Id")
+            for tag in image.get("RepoTags") or []:
+                if tag in wanted and image_id:
+                    found[tag] = image_id
+        return found
+
+    def refresh_compose_stack_containers(
+        self,
+        stack_id: int,
+        stack_name: str,
+        stack_payload: Dict[str, Any],
+        image_refs: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Recreate stale standalone Compose containers when their tag now points elsewhere."""
+        containers = self.get_stack_compose_containers(stack_name)
+        if not containers:
+            return {
+                "success": True,
+                "checked": False,
+                "workload_kind": "compose",
+                "message": f"No Compose containers found for Stack: {stack_name}",
+                "container_count": 0,
+                "updated_services": [],
+                "failed_services": [],
+            }
+
+        image_by_service = {
+            item["service"]: item["image"]
+            for item in (image_refs or [])
+            if item.get("service") and item.get("image")
+        }
+        local_image_ids = self.get_local_image_ids_by_ref(list(set(image_by_service.values())))
+        stale_containers: List[Dict[str, str]] = []
+        current_containers: List[Dict[str, str]] = []
+        unknown_containers: List[Dict[str, str]] = []
+
+        for container in containers:
+            labels = container.get("Labels") or {}
+            service_name = labels.get("com.docker.compose.service") or ""
+            expected_image = image_by_service.get(service_name)
+            if not expected_image and len(image_by_service) == 1:
+                expected_image = next(iter(image_by_service.values()))
+            container_id = container.get("Id")
+            container_image_id = container.get("ImageID") or ""
+            local_image_id = local_image_ids.get(expected_image or "")
+            item = {
+                "container": str(container_id or ""),
+                "service": str(service_name or container_id or "unknown"),
+                "image": str(expected_image or ""),
+                "container_image_id": str(container_image_id or ""),
+                "local_image_id": str(local_image_id or ""),
+            }
+            if not expected_image or not local_image_id:
+                unknown_containers.append(item)
+            elif container_image_id and container_image_id != local_image_id:
+                stale_containers.append(item)
+            else:
+                current_containers.append(item)
+
+        if not stale_containers:
+            return {
+                "success": True,
+                "checked": True,
+                "workload_kind": "compose",
+                "message": (
+                    f"Compose containers already use current local image tag(s): {stack_name}"
+                ),
+                "container_count": len(containers),
+                "updated_services": current_containers,
+                "failed_services": [],
+                "unknown_services": unknown_containers,
+                "recreated_containers": [],
+            }
+
+        failed_services: List[Dict[str, str]] = []
+        recreated_containers: List[Dict[str, str]] = []
+        for stale in stale_containers:
+            container_id = stale.get("container")
+            if not container_id:
+                failed_services.append({**stale, "error": "Container ID is missing"})
+                continue
+            try:
+                self._request(
+                    "DELETE",
+                    f"/endpoints/{self.endpoint_id}/docker/containers/{container_id}",
+                    params={"force": True, "v": False},
+                    timeout=30,
+                )
+                recreated_containers.append(stale)
+            except Exception as exc:
+                failed_services.append({**stale, "error": str(exc)})
+
+        if failed_services:
+            return {
+                "success": False,
+                "checked": True,
+                "workload_kind": "compose",
+                "message": "Some stale Compose containers failed removal",
+                "container_count": len(containers),
+                "updated_services": current_containers,
+                "failed_services": failed_services,
+                "unknown_services": unknown_containers,
+                "recreated_containers": recreated_containers,
+            }
+
+        try:
+            self._request(
+                "PUT",
+                f"/stacks/{stack_id}",
+                params={"endpointId": self.endpoint_id},
+                json=stack_payload,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "checked": True,
+                "workload_kind": "compose",
+                "message": f"Removed stale Compose containers, but Stack recreate failed: {exc}",
+                "container_count": len(containers),
+                "updated_services": current_containers,
+                "failed_services": [{**item, "error": str(exc)} for item in recreated_containers],
+                "unknown_services": unknown_containers,
+                "recreated_containers": recreated_containers,
+            }
+
+        return {
+            "success": True,
+            "checked": True,
+            "workload_kind": "compose",
+            "message": f"Recreated {len(recreated_containers)} stale Compose container(s)",
+            "container_count": len(containers),
+            "updated_services": current_containers,
+            "failed_services": [],
+            "unknown_services": unknown_containers,
+            "recreated_containers": recreated_containers,
         }
 
     def get_swarm_nodes(self) -> List[Dict[str, Any]]:

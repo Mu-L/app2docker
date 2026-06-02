@@ -368,20 +368,34 @@ class PortainerExecutor(DeployExecutor):
                     if update_status_callback:
                         force_update = result.get("force_update")
                         if force_update:
+                            workload_kind = force_update.get("workload_kind") or "swarm"
                             if force_update.get("checked"):
-                                update_status_callback(
-                                    "[Portainer] Swarm 服务强制更新: "
-                                    f"{len(force_update.get('updated_services') or [])}/{force_update.get('service_count') or 0} 个服务已触发"
-                                )
+                                if workload_kind == "compose":
+                                    update_status_callback(
+                                        "[Portainer] Compose 容器镜像校验: "
+                                        f"{force_update.get('message')}"
+                                    )
+                                    recreated = force_update.get("recreated_containers") or []
+                                    for item in recreated[:5]:
+                                        update_status_callback(
+                                            "[Portainer] 已重建旧镜像容器: "
+                                            f"{item.get('service')} ({item.get('container') or '-'}) "
+                                            f"{item.get('container_image_id') or '-'} -> {item.get('local_image_id') or '-'}"
+                                        )
+                                else:
+                                    update_status_callback(
+                                        "[Portainer] Swarm 服务强制更新: "
+                                        f"{len(force_update.get('updated_services') or [])}/{force_update.get('service_count') or 0} 个服务已触发"
+                                    )
                                 failed_services = force_update.get("failed_services") or []
                                 for failed in failed_services[:5]:
                                     update_status_callback(
-                                        "[Portainer] 服务强制更新失败: "
+                                        "[Portainer] 工作负载强制更新失败: "
                                         f"{failed.get('service')} ({failed.get('service_id') or '-'}) - {failed.get('error')}"
                                     )
                             else:
                                 update_status_callback(
-                                    "[Portainer] 未检测到 Swarm service，跳过服务级强制更新"
+                                    "[Portainer] 未检测到可强制更新的 Swarm service 或 Compose container"
                                 )
 
                 if result.get("success"):
