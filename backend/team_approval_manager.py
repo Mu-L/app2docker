@@ -138,15 +138,21 @@ def _execute_image_write_request(
     ):
         raise HTTPException(status_code=400, detail="目标仓库不是认证仓库，无需团队申请")
 
-    if not payload.get("allow_overwrite") and _target_exists(
-        payload, request_row.team_id, reviewer_id
+    existing_result = getattr(request_row, "result", None) or {}
+    execution_payload = {
+        **payload,
+        "source_image": existing_result.get("source_image") or payload["source_image"],
+        "target_image": existing_result.get("target_image") or payload["target_image"],
+    }
+
+    if not execution_payload.get("allow_overwrite") and _target_exists(
+        execution_payload, request_row.team_id, reviewer_id
     ):
         raise HTTPException(
             status_code=409,
             detail="目标镜像标签已存在，申请未允许覆盖，无法通过审核",
         )
 
-    existing_result = getattr(request_row, "result", None) or {}
     existing_task_id = existing_result.get("migration_task_id")
     if existing_task_id:
         if not MigrationTaskManager().execute_task(existing_task_id, trigger_source="approval"):
@@ -154,14 +160,14 @@ def _execute_image_write_request(
         return {
             **existing_result,
             "migration_task_id": existing_task_id,
-            "source_image": payload["source_image"],
-            "target_image": payload["target_image"],
+            "source_image": execution_payload["source_image"],
+            "target_image": execution_payload["target_image"],
         }
 
     task_id = MigrationTaskManager().create_task(
         task_name=request_row.title or title,
-        source_image=payload["source_image"],
-        target_image=payload["target_image"],
+        source_image=execution_payload["source_image"],
+        target_image=execution_payload["target_image"],
         source_registry_name=payload["source_registry_name"],
         target_registry_name=payload["target_registry_name"],
         team_id=request_row.team_id,
@@ -171,8 +177,8 @@ def _execute_image_write_request(
     )
     return {
         "migration_task_id": task_id,
-        "source_image": payload["source_image"],
-        "target_image": payload["target_image"],
+        "source_image": execution_payload["source_image"],
+        "target_image": execution_payload["target_image"],
     }
 
 

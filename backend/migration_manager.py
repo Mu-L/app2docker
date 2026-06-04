@@ -547,9 +547,37 @@ def _load_team_registry_config(
     )
     return {
         "registry": (cfg.get("registry") or "").strip(),
+        "registry_prefix": (cfg.get("registry_prefix") or "").strip(),
         "username": u,
         "password": p,
     }
+
+
+def build_registry_image_ref(
+    image_ref: str,
+    registry_name: str,
+    team_id: Optional[str],
+    user_id: Optional[str],
+) -> str:
+    repo, tag = _parse_image_ref(image_ref)
+    cfg = _load_team_registry_config(registry_name, team_id, user_id)
+    prefix = (cfg.get("registry_prefix") or "").strip().strip("/")
+    host = (cfg.get("registry") or "").strip().strip("/")
+    if not prefix and host and host != "docker.io":
+        prefix = host
+    if not prefix:
+        return f"{repo}:{tag}"
+
+    first = repo.split("/", 1)[0]
+    if repo == prefix or repo.startswith(f"{prefix}/"):
+        full_repo = repo
+    elif host and (repo == host or repo.startswith(f"{host}/")):
+        full_repo = repo
+    elif "." in first or ":" in first or first == "localhost":
+        full_repo = repo
+    else:
+        full_repo = f"{prefix}/{repo}".replace("//", "/")
+    return f"{full_repo}:{tag}"
 
 
 def registry_write_requires_approval(

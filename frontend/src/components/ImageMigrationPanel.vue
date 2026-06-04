@@ -550,6 +550,17 @@
             <Input v-model="tagRequestForm.target_tag" class="font-mono text-sm" required />
           </div>
         </div>
+        <div
+          v-if="tagSourcePreview || tagTargetPreview"
+          class="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+        >
+          <div v-if="tagSourcePreview">
+            源镜像地址：<code class="break-all text-slate-800">{{ tagSourcePreview }}</code>
+          </div>
+          <div v-if="tagTargetPreview" class="mt-1">
+            目标镜像地址：<code class="break-all text-slate-800">{{ tagTargetPreview }}</code>
+          </div>
+        </div>
         <label class="flex min-h-11 items-center gap-2 text-sm text-slate-700">
           <input v-model="tagRequestForm.allow_overwrite" type="checkbox" class="h-5 w-5 rounded" />
           允许覆盖已存在的目标标签
@@ -802,6 +813,22 @@ const targetPreview = computed(() =>
     form.value.target_image_path,
     form.value.target_tag,
     form.value.target_image_prefix,
+  ),
+);
+
+const tagSourcePreview = computed(() =>
+  buildFullImageRef(
+    tagRequestForm.value.registry_name,
+    tagRequestForm.value.image_name,
+    tagRequestForm.value.source_tag,
+  ),
+);
+
+const tagTargetPreview = computed(() =>
+  buildFullImageRef(
+    tagRequestForm.value.registry_name,
+    tagRequestForm.value.image_name,
+    tagRequestForm.value.target_tag,
   ),
 );
 

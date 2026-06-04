@@ -108,11 +108,11 @@
             <dt class="text-slate-500">源仓库</dt>
             <dd>{{ sourceRegistryFor(selected.payload) }}</dd>
             <dt class="text-slate-500">源镜像</dt>
-            <dd><code>{{ sourceImageFor(selected.payload) }}</code></dd>
+            <dd><code>{{ sourceImageFor(selected) }}</code></dd>
             <dt class="text-slate-500">目标仓库</dt>
             <dd>{{ targetRegistryFor(selected.payload) }}</dd>
             <dt class="text-slate-500">目标镜像</dt>
-            <dd><code>{{ targetImageFor(selected.payload) }}</code></dd>
+            <dd><code>{{ targetImageFor(selected) }}</code></dd>
             <dt class="text-slate-500">允许覆盖</dt>
             <dd>{{ selected.payload?.allow_overwrite ? "是" : "否" }}</dd>
             <dt v-if="selected.result?.migration_task_id" class="text-slate-500">迁移任务</dt>
@@ -257,17 +257,21 @@ function targetRegistryFor(payload = {}) {
   return payload.target_registry_name || payload.registry_name || "-";
 }
 
-function sourceImageFor(payload = {}) {
-  return payload.source_image || `${payload.image_name || "-"}:${payload.source_tag || "latest"}`;
+function sourceImageFor(item = {}) {
+  const payload = item.payload || item || {};
+  const result = item.result || {};
+  return result.source_image || payload.source_image || `${payload.image_name || "-"}:${payload.source_tag || "latest"}`;
 }
 
-function targetImageFor(payload = {}) {
-  return payload.target_image || `${payload.image_name || "-"}:${payload.target_tag || "latest"}`;
+function targetImageFor(item = {}) {
+  const payload = item.payload || item || {};
+  const result = item.result || {};
+  return result.target_image || payload.target_image || `${payload.image_name || "-"}:${payload.target_tag || "latest"}`;
 }
 
 function imageRequestSummary(item) {
   const p = item.payload || {};
-  return `${sourceRegistryFor(p)} / ${sourceImageFor(p)} -> ${targetRegistryFor(p)} / ${targetImageFor(p)}`;
+  return `${sourceRegistryFor(p)} / ${sourceImageFor(item)} -> ${targetRegistryFor(p)} / ${targetImageFor(item)}`;
 }
 
 function prettyJson(value) {
