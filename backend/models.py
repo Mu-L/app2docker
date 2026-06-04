@@ -435,6 +435,9 @@ class MigrationTask(Base):
     error = Column(Text, default="")
     team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=True)
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    approval_request_id = Column(
+        String(36), ForeignKey("team_approval_requests.request_id"), nullable=True
+    )
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -442,6 +445,36 @@ class MigrationTask(Base):
         Index("idx_migration_task_status", "status"),
         Index("idx_migration_task_team", "team_id"),
         Index("idx_migration_task_schedule", "schedule_enabled"),
+    )
+
+
+class TeamApprovalRequest(Base):
+    """Generic team approval request table."""
+
+    __tablename__ = "team_approval_requests"
+
+    request_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=False)
+    request_type = Column(String(80), nullable=False, default="")
+    title = Column(String(255), nullable=False, default="")
+    status = Column(String(50), default="pending")
+    requested_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    review_note = Column(Text, default="")
+    payload = Column(JSON, default=dict)
+    result = Column(JSON, default=dict)
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.now)
+    reviewed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("idx_team_approval_team", "team_id"),
+        Index("idx_team_approval_status", "status"),
+        Index("idx_team_approval_type", "request_type"),
+        Index("idx_team_approval_requested_by", "requested_by"),
     )
 
 

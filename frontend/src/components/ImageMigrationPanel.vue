@@ -16,6 +16,15 @@
           <AppIcon  name="plus" />
           新建迁移
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          class="w-full min-h-11 sm:w-auto"
+          @click="openTagRequestDialog"
+        >
+          <AppIcon name="tag" />
+          申请打标
+        </Button>
       </template>
     </PageToolbar>
 
@@ -474,6 +483,70 @@
         </Button>
       </template>
     </FormDialog>
+
+    <FormDialog
+      v-model="showTagRequestDialog"
+      title="申请镜像打标"
+      icon="tag"
+      size="md"
+    >
+      <form class="space-y-4" @submit.prevent="submitTagRequest">
+        <AlertBanner
+          message="提交后将进入团队申请中心，团队管理员同意后会立即执行打标。"
+        />
+        <div class="space-y-2">
+          <Label>镜像仓库 <span class="text-red-600">*</span></Label>
+          <NativeSelect v-model="tagRequestForm.registry_name" required>
+            <option value="" disabled>请选择镜像仓库</option>
+            <option v-for="reg in registries" :key="'tag-' + (reg.registry_id || reg.name)" :value="reg.name">
+              {{ reg.name }}{{ reg.active ? " (激活)" : "" }}
+            </option>
+          </NativeSelect>
+        </div>
+        <div class="space-y-2">
+          <Label>镜像名 <span class="text-red-600">*</span></Label>
+          <Input
+            v-model="tagRequestForm.image_name"
+            class="font-mono text-sm"
+            placeholder="namespace/app"
+            required
+          />
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div class="space-y-2">
+            <Label>源标签 <span class="text-red-600">*</span></Label>
+            <Input v-model="tagRequestForm.source_tag" class="font-mono text-sm" required />
+          </div>
+          <div class="space-y-2">
+            <Label>目标标签 <span class="text-red-600">*</span></Label>
+            <Input v-model="tagRequestForm.target_tag" class="font-mono text-sm" required />
+          </div>
+        </div>
+        <label class="flex min-h-11 items-center gap-2 text-sm text-slate-700">
+          <input v-model="tagRequestForm.allow_overwrite" type="checkbox" class="h-5 w-5 rounded" />
+          允许覆盖已存在的目标标签
+        </label>
+        <AlertBanner
+          v-if="tagRequestForm.allow_overwrite"
+          message="覆盖标签会影响使用该标签拉取镜像的环境，请确认目标标签可以被替换。"
+          variant="warning"
+        />
+      </form>
+      <template #footer>
+        <Button variant="outline" type="button" class="w-full sm:w-auto" @click="showTagRequestDialog = false">
+          取消
+        </Button>
+        <Button
+          type="button"
+          class="w-full sm:w-auto"
+          :disabled="tagRequestSaving || !registries.length"
+          @click="submitTagRequest"
+        >
+          <AppIcon v-if="tagRequestSaving" name="spinner" spin />
+          提交申请
+        </Button>
+      </template>
+    </FormDialog>
   </div>
 </template>
 
@@ -524,7 +597,19 @@ const executingId = ref(null);
 const testingSource = ref(false);
 const sourceTestResult = ref(null);
 const cronPresetKey = ref("custom");
+const showTagRequestDialog = ref(false);
+const tagRequestSaving = ref(false);
 let refreshInterval = null;
+
+const emptyTagRequestForm = () => ({
+  registry_name:"",
+  image_name:"",
+  source_tag:"latest",
+  target_tag:"",
+  allow_overwrite: false,
+});
+
+const tagRequestForm = ref(emptyTagRequestForm());
 
 const emptyForm = () => ({
   task_name:"",
@@ -961,6 +1046,63 @@ function openCreateDialog() {
   showDialog.value = true;
 }
 
+function openTagRequestDialog() {
+  if (!registries.value.length) {
+    toastError("请先在「镜像仓库」中配置至少一个仓库");
+    return;
+  }
+  const active = registries.value.find((r) => r.active) || registries.value[0];
+  tagRequestForm.value = {
+    ...emptyTagRequestForm(),
+    registry_name: active?.name || "",
+  };
+  showTagRequestDialog.value = true;
+}
+
+async function submitTagRequest() {
+  const payload = {
+    registry_name: tagRequestForm.value.registry_name,
+    image_name: (tagRequestForm.value.image_name || "").trim().replace(/^\/+|\/+$/g, ""),
+    source_tag: (tagRequestForm.value.source_tag || "").trim() || "latest",
+    target_tag: (tagRequestForm.value.target_tag || "").trim(),
+    allow_overwrite: !!tagRequestForm.value.allow_overwrite,
+  };
+  if (!payload.registry_name) {
+    toastError("请选择镜像仓库");
+    return;
+  }
+  if (!payload.image_name) {
+    toastError("请填写镜像名");
+    return;
+  }
+  if (payload.image_name.split("/").pop().includes(":")) {
+    toastError("镜像名不能包含标签，请分别填写源标签和目标标签");
+    return;
+  }
+  if (!payload.target_tag) {
+    toastError("请填写目标标签");
+    return;
+  }
+  if (payload.source_tag === payload.target_tag) {
+    toastError("源标签和目标标签不能相同");
+    return;
+  }
+
+  tagRequestSaving.value = true;
+  try {
+    await axios.post("/api/team-approval-requests", {
+      request_type: "image_tag",
+      payload,
+    });
+    toastSuccess("打标申请已提交");
+    showTagRequestDialog.value = false;
+  } catch (e) {
+    toastApiError(e, "提交打标申请失败");
+  } finally {
+    tagRequestSaving.value = false;
+  }
+}
+
 function openEditDialog(task) {
   editingTaskId.value = task.task_id;
   isCopyDialog.value = false;
@@ -1028,11 +1170,23 @@ async function saveTask() {
     }
 
     if (editingTaskId.value) {
-      await axios.put(`/api/migration-tasks/${editingTaskId.value}`, payload);
+      const res = await axios.put(`/api/migration-tasks/${editingTaskId.value}`, payload);
+      if (res.data?.approval_required) {
+        toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+        showDialog.value = false;
+        isCopyDialog.value = false;
+        return;
+      }
       toastSuccess("迁移任务已更新");
     } else {
       payload.execute_now = form.value.execute_now;
-      await axios.post("/api/migration-tasks", payload);
+      const res = await axios.post("/api/migration-tasks", payload);
+      if (res.data?.approval_required) {
+        toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+        showDialog.value = false;
+        isCopyDialog.value = false;
+        return;
+      }
       if (isCopyDialog.value) {
         toastSuccess(
           form.value.execute_now ?"已复制并开始执行" :"已复制迁移任务",
@@ -1056,7 +1210,12 @@ async function saveTask() {
 async function executeTask(task) {
   executingId.value = task.task_id;
   try {
-    await axios.post(`/api/migration-tasks/${task.task_id}/execute`);
+    const res = await axios.post(`/api/migration-tasks/${task.task_id}/execute`);
+    if (res.data?.approval_required) {
+      toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+      await loadTasks();
+      return;
+    }
     toastSuccess("迁移任务已启动");
     await loadTasks();
     startPolling();

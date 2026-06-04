@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import asyncio
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from fastapi import (
     APIRouter,
     File,
@@ -318,6 +318,17 @@ class MigrationTestSourceImageRequest(BaseModel):
     source_image: str
 
 
+class TeamApprovalCreateRequest(BaseModel):
+    request_type: str
+    payload: Dict[str, Any]
+    title: str = ""
+    team_id: Optional[str] = None
+
+
+class TeamApprovalReviewRequest(BaseModel):
+    review_note: str = ""
+
+
 def _migration_schedule_requested(
     schedule_enabled: bool, schedule_cron: Optional[str]
 ) -> bool:
@@ -333,6 +344,58 @@ def _migration_schedule_payload_sets_timer(payload: dict) -> bool:
 
 def _migration_schedule_payload_has_field(payload: dict) -> bool:
     return "schedule_enabled" in payload or "schedule_cron" in payload
+
+
+def _registry_write_requires_approval(
+    registry_name: str,
+    team_id: str,
+    user_id: str,
+) -> bool:
+    from backend.migration_manager import registry_write_requires_approval
+
+    return registry_write_requires_approval(registry_name, team_id, user_id)
+
+
+def _create_migration_approval_request(
+    *,
+    team_id: str,
+    user_id: str,
+    task_name: str,
+    source_registry_name: str,
+    source_image: str,
+    target_registry_name: str,
+    target_image: str,
+    allow_overwrite: bool = False,
+) -> dict:
+    from backend.team_approval_manager import TeamApprovalManager
+
+    manager = TeamApprovalManager()
+    request_id = manager.create_request(
+        team_id=team_id,
+        request_type="image_migration",
+        requested_by=user_id,
+        title=task_name or f"镜像迁移：{source_image} -> {target_image}",
+        payload={
+            "source_registry_name": source_registry_name,
+            "source_image": source_image,
+            "target_registry_name": target_registry_name,
+            "target_image": target_image,
+            "allow_overwrite": allow_overwrite,
+        },
+    )
+    return manager.get_request(request_id) or {"request_id": request_id}
+
+
+def _approval_required_response(approval_request: dict) -> JSONResponse:
+    return JSONResponse(
+        {
+            "success": True,
+            "approval_required": True,
+            "message": "写入认证镜像仓库需要团队审核，已提交团队申请",
+            "request": approval_request,
+            "request_id": approval_request.get("request_id"),
+        }
+    )
 
 
 @router.get("/public/version")
@@ -5300,6 +5363,227 @@ async def delete_export_task(
 
 
 # === 镜像迁移 ===
+@router.post("/team-approval-requests")
+async def create_team_approval_request(
+    request: Request,
+    body: TeamApprovalCreateRequest,
+    team_id: Optional[str] = Query(None),
+):
+    """Create a generic team approval request."""
+    try:
+        from backend.database import get_db_session
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
+                db, username, team_id or body.team_id
+            )
+            user_id = get_user_id_by_username(db, username)
+            require_team_member(db, scoped_team_id, user_id)
+        finally:
+            db.close()
+
+        manager = TeamApprovalManager()
+        request_id = manager.create_request(
+            team_id=scoped_team_id,
+            request_type=body.request_type,
+            payload=body.payload,
+            requested_by=user_id,
+            title=body.title,
+        )
+        OperationLogger.log(
+            username,
+            "create_team_approval_request",
+            {"request_id": request_id, "request_type": body.request_type},
+        )
+        return JSONResponse(
+            {
+                "success": True,
+                "request_id": request_id,
+                "request": manager.get_request(request_id),
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建团队申请失败: {str(e)}")
+
+
+@router.get("/team-approval-requests")
+async def list_team_approval_requests(
+    request: Request,
+    team_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    request_type: Optional[str] = Query(None),
+):
+    """List team approval requests."""
+    try:
+        from backend.database import get_db_session
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            member = require_team_member(db, scoped_team_id, user_id)
+            requested_by = None if member.role in ("owner", "admin") else user_id
+        finally:
+            db.close()
+
+        requests = TeamApprovalManager().list_requests(
+            team_id=scoped_team_id,
+            status=status,
+            request_type=request_type,
+            requested_by=requested_by,
+        )
+        return JSONResponse({"requests": requests})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取团队申请失败: {str(e)}")
+
+
+@router.get("/team-approval-requests/{request_id}")
+async def get_team_approval_request(
+    request_id: str,
+    request: Request,
+    team_id: Optional[str] = Query(None),
+):
+    """Get one team approval request."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            member = require_team_member(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权访问该团队申请")
+            if member.role not in ("owner", "admin") and row.requested_by != user_id:
+                raise HTTPException(status_code=403, detail="无权访问该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().get_request(request_id)
+        return JSONResponse({"request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取团队申请详情失败: {str(e)}")
+
+
+@router.post("/team-approval-requests/{request_id}/approve")
+async def approve_team_approval_request(
+    request_id: str,
+    request: Request,
+    body: TeamApprovalReviewRequest = Body(default=TeamApprovalReviewRequest()),
+    team_id: Optional[str] = Query(None),
+):
+    """Approve a team request and run its handler."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_team_admin(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权审批该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().approve_request(
+            request_id,
+            reviewer_id=user_id,
+            review_note=body.review_note,
+        )
+        OperationLogger.log(
+            username,
+            "approve_team_approval_request",
+            {"request_id": request_id},
+        )
+        return JSONResponse({"success": True, "request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"同意团队申请失败: {str(e)}")
+
+
+@router.post("/team-approval-requests/{request_id}/reject")
+async def reject_team_approval_request(
+    request_id: str,
+    request: Request,
+    body: TeamApprovalReviewRequest = Body(default=TeamApprovalReviewRequest()),
+    team_id: Optional[str] = Query(None),
+):
+    """Reject a team request."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_team_admin(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权审批该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().reject_request(
+            request_id,
+            reviewer_id=user_id,
+            review_note=body.review_note,
+        )
+        OperationLogger.log(
+            username,
+            "reject_team_approval_request",
+            {"request_id": request_id},
+        )
+        return JSONResponse({"success": True, "request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"驳回团队申请失败: {str(e)}")
+
+
 @router.get("/migration-tasks")
 async def list_migration_tasks(
     request: Request,
@@ -5417,6 +5701,30 @@ async def create_migration_task(
                 body.schedule_enabled, body.schedule_cron
             ):
                 require_team_admin(db, scoped_team_id, user_id)
+            target_needs_approval = _registry_write_requires_approval(
+                body.target_registry_name, scoped_team_id, user_id
+            )
+            if target_needs_approval and (
+                body.execute_now
+                or _migration_schedule_requested(
+                    body.schedule_enabled, body.schedule_cron
+                )
+            ):
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=body.task_name,
+                    source_registry_name=body.source_registry_name,
+                    source_image=body.source_image,
+                    target_registry_name=body.target_registry_name,
+                    target_image=body.target_image,
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id")},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 
@@ -5485,6 +5793,41 @@ async def update_migration_task(
                 or _migration_schedule_payload_sets_timer(payload)
             ):
                 require_team_admin(db, scoped_team_id, user_id)
+            effective_target_registry = payload.get(
+                "target_registry_name", task.target_registry_name
+            )
+            effective_schedule_enabled = payload.get(
+                "schedule_enabled", bool(task.schedule_enabled)
+            )
+            effective_schedule_cron = payload.get(
+                "schedule_cron", task.schedule_cron or ""
+            )
+            if (
+                _migration_schedule_requested(
+                    bool(effective_schedule_enabled), effective_schedule_cron
+                )
+                and _registry_write_requires_approval(
+                    effective_target_registry, scoped_team_id, user_id
+                )
+                and not getattr(task, "approval_request_id", None)
+            ):
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=payload.get("task_name", task.task_name or ""),
+                    source_registry_name=payload.get(
+                        "source_registry_name", task.source_registry_name
+                    ),
+                    source_image=payload.get("source_image", task.source_image),
+                    target_registry_name=effective_target_registry,
+                    target_image=payload.get("target_image", task.target_image),
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id")},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 
@@ -5558,7 +5901,28 @@ async def execute_migration_task(
         try:
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
-            require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            task_row = require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            if (
+                _registry_write_requires_approval(
+                    task_row.target_registry_name, scoped_team_id, user_id
+                )
+                and not getattr(task_row, "approval_request_id", None)
+            ):
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=task_row.task_name or "",
+                    source_registry_name=task_row.source_registry_name,
+                    source_image=task_row.source_image,
+                    target_registry_name=task_row.target_registry_name,
+                    target_image=task_row.target_image,
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id"), "task_id": task_id},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 

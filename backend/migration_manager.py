@@ -497,6 +497,28 @@ def _load_team_registry_config(
     }
 
 
+def registry_write_requires_approval(
+    registry_name: str,
+    team_id: Optional[str],
+    user_id: Optional[str],
+) -> bool:
+    """Return True when writing to this configured registry uses credentials."""
+    if not (registry_name or "").strip():
+        return False
+    cfg = _load_team_registry_config(registry_name, team_id, user_id)
+    return bool(cfg.get("username") and cfg.get("password"))
+
+
+def migration_task_requires_approval(task) -> bool:
+    if not task:
+        return False
+    return registry_write_requires_approval(
+        getattr(task, "target_registry_name", "") or "",
+        getattr(task, "team_id", None),
+        getattr(task, "created_by", None),
+    )
+
+
 class MigrationTaskManager:
     """镜像迁移任务管理器（单例）"""
 
@@ -551,6 +573,7 @@ class MigrationTaskManager:
             "error": task.error or "",
             "team_id": getattr(task, "team_id", None),
             "created_by": getattr(task, "created_by", None),
+            "approval_request_id": getattr(task, "approval_request_id", None),
             "created_by_username": creator_username,
             "created_at": (
                 task.created_at.isoformat() if task.created_at else None
@@ -627,6 +650,7 @@ class MigrationTaskManager:
         schedule_enabled: bool = False,
         team_id: Optional[str] = None,
         created_by: Optional[str] = None,
+        approval_request_id: Optional[str] = None,
         execute_now: bool = False,
     ) -> str:
         from backend.database import get_db_session
@@ -686,6 +710,7 @@ class MigrationTaskManager:
                 next_run_time=next_run,
                 team_id=team_id,
                 created_by=created_by,
+                approval_request_id=approval_request_id,
                 created_at=now,
                 updated_at=now,
             )
@@ -890,6 +915,14 @@ class MigrationTaskManager:
                 return False
             if task.status in ("running", "pending"):
                 return False
+            if migration_task_requires_approval(task) and not getattr(
+                task, "approval_request_id", None
+            ):
+                task.status = "failed"
+                task.error = "写入认证镜像仓库必须先提交团队申请并审批通过"
+                task.updated_at = datetime.now()
+                db.commit()
+                return False
             task.status = "pending"
             task.error = ""
             task.updated_at = datetime.now()
@@ -915,6 +948,14 @@ class MigrationTaskManager:
                 .first()
             )
             if not task or task.status != "pending":
+                return False
+            if migration_task_requires_approval(task) and not getattr(
+                task, "approval_request_id", None
+            ):
+                task.status = "failed"
+                task.error = "写入认证镜像仓库必须先提交团队申请并审批通过"
+                task.updated_at = datetime.now()
+                db.commit()
                 return False
             task.status = "running"
             db.commit()
