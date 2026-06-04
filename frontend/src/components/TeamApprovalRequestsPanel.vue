@@ -36,6 +36,7 @@
             <TableHead>类型</TableHead>
             <TableHead>申请人</TableHead>
             <TableHead>状态</TableHead>
+            <TableHead>审批人</TableHead>
             <TableHead>时间</TableHead>
             <TableHead class="text-end">操作</TableHead>
           </TableRow>
@@ -58,6 +59,7 @@
                 {{ item.error }}
               </div>
             </TableCell>
+            <TableCell>{{ userLabel(item.reviewed_by_username, item.reviewed_by) }}</TableCell>
             <TableCell class="text-sm text-slate-500">
               <div>{{ formatTime(item.created_at) }}</div>
               <div v-if="item.reviewed_at" class="text-xs">审核 {{ formatTime(item.reviewed_at) }}</div>

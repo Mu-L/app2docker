@@ -49,12 +49,15 @@ def _approval_info_by_ids(request_ids):
             .filter(TeamApprovalRequest.request_id.in_(ids))
             .all()
         )
+        usernames = _usernames_by_id([row.reviewed_by for row in rows])
         return {
             row.request_id: {
                 "approval_status": row.status or "",
                 "approval_request_type": row.request_type or "",
                 "approval_title": row.title or "",
                 "approval_review_note": row.review_note or "",
+                "approval_reviewed_by": row.reviewed_by or "",
+                "approval_reviewed_by_username": usernames.get(row.reviewed_by),
                 "approval_error": row.error or "",
                 "approval_reviewed_at": (
                     row.reviewed_at.isoformat() if row.reviewed_at else None
@@ -651,6 +654,10 @@ class MigrationTaskManager:
             "approval_request_type": approval_info.get("approval_request_type", ""),
             "approval_title": approval_info.get("approval_title", ""),
             "approval_review_note": approval_info.get("approval_review_note", ""),
+            "approval_reviewed_by": approval_info.get("approval_reviewed_by", ""),
+            "approval_reviewed_by_username": approval_info.get(
+                "approval_reviewed_by_username"
+            ),
             "approval_error": approval_info.get("approval_error", ""),
             "approval_reviewed_at": approval_info.get("approval_reviewed_at"),
             "approval_created_at": approval_info.get("approval_created_at"),
