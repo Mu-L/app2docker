@@ -5891,14 +5891,10 @@ async def update_migration_task(
             task = require_migration_task_in_team(
                 db, user_id, task_id, scoped_team_id
             )
-            member = require_team_member(db, scoped_team_id, user_id)
-            if getattr(task, "approval_request_id", None) and member.role not in (
-                "owner",
-                "admin",
-            ):
+            if getattr(task, "approval_request_id", None):
                 raise HTTPException(
                     status_code=400,
-                    detail="该任务已绑定审批申请，成员不能编辑；如需变更请重新提交任务",
+                    detail="该任务已绑定审批申请，不能编辑；如需变更请重新提交任务",
                 )
             payload = body.model_dump(exclude_unset=True)
             schedule_field_present = _migration_schedule_payload_has_field(payload)

@@ -129,6 +129,7 @@
               <AppIcon  name="stop" />
             </Button>
             <Button
+              v-if="!task.approval_request_id"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -139,6 +140,7 @@
               <AppIcon  name="copy" />
             </Button>
             <Button
+              v-if="!task.approval_request_id"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -240,6 +242,7 @@
             <TableCell class="text-end">
               <div class="flex flex-wrap justify-end gap-1">
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running' || task.status === 'pending' || executingId === task.task_id"
@@ -266,6 +269,7 @@
                   <AppIcon  name="stop" />
                 </Button>
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running'"
@@ -275,6 +279,7 @@
                   <AppIcon  name="copy" />
                 </Button>
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running'"
