@@ -16,6 +16,25 @@ from backend.handlers import (
 )
 
 
+def _usernames_by_id(user_ids):
+    ids = [uid for uid in set(user_ids or []) if uid]
+    if not ids:
+        return {}
+    from backend.database import get_db_session
+    from backend.models import User
+
+    db = get_db_session()
+    try:
+        return {
+            row.user_id: row.username
+            for row in db.query(User.user_id, User.username)
+            .filter(User.user_id.in_(ids))
+            .all()
+        }
+    finally:
+        db.close()
+
+
 def _parse_image_ref(image_ref: str) -> Tuple[str, str]:
     """解析完整镜像引用为 repository 与 tag。"""
     ref = (image_ref or "").strip()
@@ -502,7 +521,7 @@ class MigrationTaskManager:
         self.lock = threading.Lock()
         self._running_threads: Dict[str, threading.Thread] = {}
 
-    def _to_dict(self, task) -> dict:
+    def _to_dict(self, task, creator_username: str = None) -> dict:
         if not task:
             return {}
         return {
@@ -532,6 +551,7 @@ class MigrationTaskManager:
             "error": task.error or "",
             "team_id": getattr(task, "team_id", None),
             "created_by": getattr(task, "created_by", None),
+            "created_by_username": creator_username,
             "created_at": (
                 task.created_at.isoformat() if task.created_at else None
             ),
@@ -541,7 +561,10 @@ class MigrationTaskManager:
         }
 
     def list_tasks(
-        self, team_id: Optional[str] = None, status: Optional[str] = None
+        self,
+        team_id: Optional[str] = None,
+        status: Optional[str] = None,
+        created_by: Optional[str] = None,
     ) -> List[dict]:
         from backend.database import get_db_session
         from backend.models import MigrationTask
@@ -553,8 +576,17 @@ class MigrationTaskManager:
                 q = q.filter(MigrationTask.team_id == team_id)
             if status:
                 q = q.filter(MigrationTask.status == status)
+            if created_by:
+                q = q.filter(MigrationTask.created_by == created_by)
             rows = q.order_by(MigrationTask.created_at.desc()).all()
-            return [self._to_dict(r) for r in rows]
+            usernames = _usernames_by_id([getattr(r, "created_by", None) for r in rows])
+            return [
+                self._to_dict(
+                    r,
+                    creator_username=usernames.get(getattr(r, "created_by", None)),
+                )
+                for r in rows
+            ]
         finally:
             db.close()
 
@@ -569,7 +601,12 @@ class MigrationTaskManager:
                 .filter(MigrationTask.task_id == task_id)
                 .first()
             )
-            return self._to_dict(row) if row else None
+            if not row:
+                return None
+            username = _usernames_by_id([getattr(row, "created_by", None)]).get(
+                getattr(row, "created_by", None)
+            )
+            return self._to_dict(row, creator_username=username)
         finally:
             db.close()
 

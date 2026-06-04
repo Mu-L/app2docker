@@ -61,6 +61,8 @@
             <dd><code class="break-all text-slate-800">{{ task.source_image }}</code></dd>
             <dt class="text-slate-500">目标</dt>
             <dd><code class="break-all text-slate-800">{{ task.target_image }}</code></dd>
+            <dt class="text-slate-500">创建人</dt>
+            <dd>{{ taskCreatorLabel(task) }}</dd>
             <dt class="text-slate-500">定时</dt>
             <dd>
               <span v-if="task.schedule_enabled && task.schedule_cron">
@@ -89,7 +91,7 @@
               <AppIcon  name="play" class="mr-1" />执行
             </Button>
             <Button
-              v-if="task.schedule_cron"
+              v-if="canSetMigrationSchedule && task.schedule_cron"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -145,6 +147,7 @@
             <TableHead>任务名称</TableHead>
             <TableHead>源镜像</TableHead>
             <TableHead>目标镜像</TableHead>
+            <TableHead>创建人</TableHead>
             <TableHead>状态</TableHead>
             <TableHead>定时</TableHead>
             <TableHead>执行次数</TableHead>
@@ -160,6 +163,18 @@
             </TableCell>
             <TableCell>
               <code class="text-xs">{{ task.target_image }}</code>
+            </TableCell>
+            <TableCell class="text-sm text-slate-600">
+              <span
+                class="inline-flex max-w-[6.5rem] items-center gap-1 truncate"
+                :title="taskCreatorLabel(task)"
+              >
+                <AppIcon
+                  :name="task.created_by ? 'user' : 'users'"
+                  class="shrink-0 text-slate-400"
+                />
+                <span class="truncate">{{ taskCreatorLabel(task) }}</span>
+              </span>
             </TableCell>
             <TableCell>
               <Badge v-if="task.status === 'idle'" variant="default">空闲</Badge>
@@ -202,7 +217,7 @@
                   <AppIcon  name="play" />
                 </Button>
                 <Button
-                  v-if="task.schedule_cron"
+                  v-if="canSetMigrationSchedule && task.schedule_cron"
                   size="sm"
                   variant="outline"
                   :title="task.schedule_enabled ? '禁用定时' : '启用定时'"
@@ -401,7 +416,10 @@
         </div>
 
         <!-- 定时 -->
-        <div class="rounded-lg border border-slate-200 p-3 space-y-3">
+        <div
+          v-if="canSetMigrationSchedule"
+          class="rounded-lg border border-slate-200 p-3 space-y-3"
+        >
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <Label class="mb-0!">定时执行</Label>
             <label class="flex min-h-11 items-center gap-2 text-sm">
@@ -680,6 +698,7 @@ const canTestSourceImage = computed(
     !!form.value.source_image_path?.trim() &&
     !!sourcePreview.value,
 );
+const canSetMigrationSchedule = computed(() => teamStore.canManageTeam);
 
 function cronPresetLabel(cron) {
   const p = CRON_PRESETS.find((x) => x.cron === cron);
@@ -716,6 +735,12 @@ watch(
 function formatTime(iso) {
   if (!iso) return"-";
   return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+function taskCreatorLabel(task) {
+  if (task?.created_by_username) return task.created_by_username;
+  if (task?.created_by) return task.created_by;
+  return"团队";
 }
 
 function splitImageRef(fullRef) {
@@ -953,6 +978,10 @@ function openCopyDialog(task) {
   editingTaskId.value = null;
   isCopyDialog.value = true;
   form.value = buildFormFromTask(task, { forCopy: true });
+  if (!canSetMigrationSchedule.value) {
+    form.value.schedule_cron ="";
+    form.value.schedule_enabled = false;
+  }
   cronPresetKey.value = matchCronPresetKey(form.value.schedule_cron);
   sourceTestResult.value = null;
   showDialog.value = true;
@@ -973,7 +1002,11 @@ async function saveTask() {
     toastError("请填写镜像路径");
     return;
   }
-  if (form.value.schedule_enabled && !form.value.schedule_cron?.trim()) {
+  if (
+    canSetMigrationSchedule.value &&
+    form.value.schedule_enabled &&
+    !form.value.schedule_cron?.trim()
+  ) {
     toastError("启用定时时请填写或选择 Cron 表达式");
     return;
   }
@@ -986,9 +1019,13 @@ async function saveTask() {
       source_image,
       target_registry_name: form.value.target_registry_name,
       target_image,
-      schedule_cron: form.value.schedule_enabled ? form.value.schedule_cron.trim() :"",
-      schedule_enabled: form.value.schedule_enabled,
     };
+    if (canSetMigrationSchedule.value) {
+      payload.schedule_cron = form.value.schedule_enabled
+        ? form.value.schedule_cron.trim()
+        :"";
+      payload.schedule_enabled = form.value.schedule_enabled;
+    }
 
     if (editingTaskId.value) {
       await axios.put(`/api/migration-tasks/${editingTaskId.value}`, payload);

@@ -290,6 +290,7 @@ class MigrationTaskCreateRequest(BaseModel):
     schedule_cron: str = ""
     schedule_enabled: bool = False
     execute_now: bool = False
+    team_id: Optional[str] = None
 
 
 class MigrationTaskUpdateRequest(BaseModel):
@@ -315,6 +316,23 @@ class MigrationToggleScheduleRequest(BaseModel):
 class MigrationTestSourceImageRequest(BaseModel):
     source_registry_name: str
     source_image: str
+
+
+def _migration_schedule_requested(
+    schedule_enabled: bool, schedule_cron: Optional[str]
+) -> bool:
+    return bool(schedule_enabled) or bool((schedule_cron or "").strip())
+
+
+def _migration_schedule_payload_sets_timer(payload: dict) -> bool:
+    return _migration_schedule_requested(
+        payload.get("schedule_enabled") is True,
+        payload.get("schedule_cron"),
+    )
+
+
+def _migration_schedule_payload_has_field(payload: dict) -> bool:
+    return "schedule_enabled" in payload or "schedule_cron" in payload
 
 
 @router.get("/public/version")
@@ -5297,10 +5315,15 @@ async def list_migration_tasks(
         db = get_db_session()
         try:
             scoped_team_id = resolve_team_scope_from_request(db, username, team_id)
+            user_id = get_user_id_by_username(db, username)
+            member = require_team_member(db, scoped_team_id, user_id)
+            created_by = None if member.role in ("owner", "admin") else user_id
         finally:
             db.close()
         manager = MigrationTaskManager()
-        tasks = manager.list_tasks(team_id=scoped_team_id, status=status)
+        tasks = manager.list_tasks(
+            team_id=scoped_team_id, status=status, created_by=created_by
+        )
         return JSONResponse({"tasks": tasks})
     except HTTPException:
         raise
@@ -5390,6 +5413,10 @@ async def create_migration_task(
                 db, username, team_id or body.team_id
             )
             user_id = get_user_id_by_username(db, username)
+            if _migration_schedule_requested(
+                body.schedule_enabled, body.schedule_cron
+            ):
+                require_team_admin(db, scoped_team_id, user_id)
         finally:
             db.close()
 
@@ -5445,11 +5472,22 @@ async def update_migration_task(
         try:
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
-            require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            task = require_migration_task_in_team(
+                db, user_id, task_id, scoped_team_id
+            )
+            payload = body.model_dump(exclude_unset=True)
+            schedule_field_present = _migration_schedule_payload_has_field(payload)
+            existing_has_schedule = bool(task.schedule_enabled) or bool(
+                (task.schedule_cron or "").strip()
+            )
+            if schedule_field_present and (
+                existing_has_schedule
+                or _migration_schedule_payload_sets_timer(payload)
+            ):
+                require_team_admin(db, scoped_team_id, user_id)
         finally:
             db.close()
 
-        payload = body.model_dump(exclude_unset=True)
         if not MigrationTaskManager().update_task(task_id, **payload):
             raise HTTPException(status_code=404, detail="任务不存在")
         OperationLogger.log(username, "update_migration_task", {"task_id": task_id})
@@ -5594,6 +5632,7 @@ async def toggle_migration_schedule(
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
             require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            require_team_admin(db, scoped_team_id, user_id)
         finally:
             db.close()
 
