@@ -70,6 +70,17 @@
             <dd><code class="break-all text-slate-800">{{ task.source_image }}</code></dd>
             <dt class="text-slate-500">目标</dt>
             <dd><code class="break-all text-slate-800">{{ task.target_image }}</code></dd>
+            <template v-if="task.approval_request_id">
+              <dt class="text-slate-500">审核</dt>
+              <dd>
+                <Badge :variant="approvalStatusVariant(task.approval_status)">
+                  {{ approvalStatusLabel(task.approval_status) }}
+                </Badge>
+                <span v-if="task.approval_review_note" class="ml-1 text-slate-500">
+                  {{ task.approval_review_note }}
+                </span>
+              </dd>
+            </template>
             <dt class="text-slate-500">创建人</dt>
             <dd>{{ taskCreatorLabel(task) }}</dd>
             <dt class="text-slate-500">定时</dt>
@@ -172,6 +183,18 @@
             </TableCell>
             <TableCell>
               <code class="text-xs">{{ task.target_image }}</code>
+              <div v-if="task.approval_request_id" class="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                <Badge :variant="approvalStatusVariant(task.approval_status)">
+                  {{ approvalTypeLabel(task.approval_request_type) }} · {{ approvalStatusLabel(task.approval_status) }}
+                </Badge>
+                <span
+                  v-if="task.approval_review_note"
+                  class="max-w-[12rem] truncate text-slate-500"
+                  :title="task.approval_review_note"
+                >
+                  {{ task.approval_review_note }}
+                </span>
+              </div>
             </TableCell>
             <TableCell class="text-sm text-slate-600">
               <span
@@ -822,6 +845,32 @@ function formatTime(iso) {
   return new Date(iso).toLocaleString("zh-CN", { hour12: false });
 }
 
+function approvalStatusLabel(status) {
+  return {
+    pending: "待审核",
+    approved: "已同意",
+    running: "执行中",
+    completed: "已完成",
+    failed: "失败",
+    rejected: "已驳回",
+    canceled: "已取消",
+  }[status] || status || "-";
+}
+
+function approvalStatusVariant(status) {
+  if (status === "completed") return "success";
+  if (status === "failed" || status === "rejected") return "danger";
+  if (status === "running" || status === "approved") return "info";
+  if (status === "pending") return "warning";
+  return "default";
+}
+
+function approvalTypeLabel(type) {
+  if (type === "image_tag") return "打标";
+  if (type === "image_migration") return "迁移";
+  return "审核";
+}
+
 function taskCreatorLabel(task) {
   if (task?.created_by_username) return task.created_by_username;
   if (task?.created_by) return task.created_by;
@@ -1096,6 +1145,7 @@ async function submitTagRequest() {
     });
     toastSuccess("打标申请已提交");
     showTagRequestDialog.value = false;
+    await loadTasks();
   } catch (e) {
     toastApiError(e, "提交打标申请失败");
   } finally {
@@ -1175,6 +1225,7 @@ async function saveTask() {
         toastSuccess("镜像迁移申请已提交，待团队管理员审核");
         showDialog.value = false;
         isCopyDialog.value = false;
+        await loadTasks();
         return;
       }
       toastSuccess("迁移任务已更新");
@@ -1185,6 +1236,7 @@ async function saveTask() {
         toastSuccess("镜像迁移申请已提交，待团队管理员审核");
         showDialog.value = false;
         isCopyDialog.value = false;
+        await loadTasks();
         return;
       }
       if (isCopyDialog.value) {

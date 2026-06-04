@@ -366,6 +366,9 @@ def _create_migration_approval_request(
     target_registry_name: str,
     target_image: str,
     allow_overwrite: bool = False,
+    existing_task_id: Optional[str] = None,
+    schedule_cron: str = "",
+    schedule_enabled: bool = False,
 ) -> dict:
     from backend.team_approval_manager import TeamApprovalManager
 
@@ -383,10 +386,71 @@ def _create_migration_approval_request(
             "allow_overwrite": allow_overwrite,
         },
     )
-    return manager.get_request(request_id) or {"request_id": request_id}
+    approval_request = manager.get_request(request_id) or {"request_id": request_id}
+    _bind_image_approval_task(
+        approval_request,
+        user_id=user_id,
+        existing_task_id=existing_task_id,
+        schedule_cron=schedule_cron,
+        schedule_enabled=schedule_enabled,
+    )
+    return manager.get_request(request_id) or approval_request
+
+
+def _bind_image_approval_task(
+    approval_request: dict,
+    *,
+    user_id: str,
+    existing_task_id: Optional[str] = None,
+    schedule_cron: str = "",
+    schedule_enabled: bool = False,
+) -> Optional[str]:
+    from backend.migration_manager import MigrationTaskManager
+    from backend.team_approval_manager import TeamApprovalManager
+
+    request_id = approval_request.get("request_id")
+    payload = approval_request.get("payload") or {}
+    if not request_id:
+        return None
+    manager = MigrationTaskManager()
+    if existing_task_id:
+        manager.bind_approval_request(existing_task_id, request_id)
+        task_id = existing_task_id
+    else:
+        task_id = manager.create_task(
+            task_name=approval_request.get("title") or payload.get("source_image") or "",
+            source_image=payload["source_image"],
+            target_image=payload["target_image"],
+            source_registry_name=payload["source_registry_name"],
+            target_registry_name=payload["target_registry_name"],
+            schedule_cron=schedule_cron,
+            schedule_enabled=schedule_enabled,
+            team_id=approval_request.get("team_id"),
+            created_by=user_id,
+            approval_request_id=request_id,
+            execute_now=False,
+        )
+    TeamApprovalManager().set_request_result(
+        request_id,
+        {
+            "migration_task_id": task_id,
+            "source_image": payload.get("source_image"),
+            "target_image": payload.get("target_image"),
+        },
+    )
+    return task_id
 
 
 def _approval_required_response(approval_request: dict) -> JSONResponse:
+    task = None
+    task_id = (approval_request.get("result") or {}).get("migration_task_id")
+    if task_id:
+        try:
+            from backend.migration_manager import MigrationTaskManager
+
+            task = MigrationTaskManager().get_task(task_id)
+        except Exception:
+            task = None
     return JSONResponse(
         {
             "success": True,
@@ -394,6 +458,8 @@ def _approval_required_response(approval_request: dict) -> JSONResponse:
             "message": "写入认证镜像仓库需要团队审核，已提交团队申请",
             "request": approval_request,
             "request_id": approval_request.get("request_id"),
+            "task": task,
+            "task_id": task_id,
         }
     )
 
@@ -5386,6 +5452,34 @@ async def create_team_approval_request(
             db.close()
 
         manager = TeamApprovalManager()
+        if body.request_type in ("image_tag", "image_migration"):
+            from backend.migration_manager import MigrationTaskManager
+            from backend.team_approval_manager import APPROVAL_HANDLERS
+
+            handler = APPROVAL_HANDLERS.get(body.request_type)
+            cleaned_payload = handler["validate_payload"](body.payload or {})
+            if not _registry_write_requires_approval(
+                cleaned_payload["target_registry_name"], scoped_team_id, user_id
+            ):
+                task_manager = MigrationTaskManager()
+                task_id = task_manager.create_task(
+                    task_name=body.title or handler["title"](cleaned_payload),
+                    source_image=cleaned_payload["source_image"],
+                    target_image=cleaned_payload["target_image"],
+                    source_registry_name=cleaned_payload["source_registry_name"],
+                    target_registry_name=cleaned_payload["target_registry_name"],
+                    team_id=scoped_team_id,
+                    created_by=user_id,
+                    execute_now=True,
+                )
+                return JSONResponse(
+                    {
+                        "success": True,
+                        "approval_required": False,
+                        "task_id": task_id,
+                        "task": task_manager.get_task(task_id),
+                    }
+                )
         request_id = manager.create_request(
             team_id=scoped_team_id,
             request_type=body.request_type,
@@ -5393,16 +5487,28 @@ async def create_team_approval_request(
             requested_by=user_id,
             title=body.title,
         )
+        approval_request = manager.get_request(request_id)
+        if body.request_type in ("image_tag", "image_migration"):
+            _bind_image_approval_task(approval_request, user_id=user_id)
+            approval_request = manager.get_request(request_id)
         OperationLogger.log(
             username,
             "create_team_approval_request",
             {"request_id": request_id, "request_type": body.request_type},
         )
+        task_id = (approval_request.get("result") or {}).get("migration_task_id")
+        task = None
+        if task_id:
+            from backend.migration_manager import MigrationTaskManager
+
+            task = MigrationTaskManager().get_task(task_id)
         return JSONResponse(
             {
                 "success": True,
                 "request_id": request_id,
-                "request": manager.get_request(request_id),
+                "request": approval_request,
+                "task_id": task_id,
+                "task": task,
             }
         )
     except ValueError as e:
@@ -5718,6 +5824,8 @@ async def create_migration_task(
                     source_image=body.source_image,
                     target_registry_name=body.target_registry_name,
                     target_image=body.target_image,
+                    schedule_cron=body.schedule_cron,
+                    schedule_enabled=body.schedule_enabled,
                 )
                 OperationLogger.log(
                     username,
@@ -5783,6 +5891,15 @@ async def update_migration_task(
             task = require_migration_task_in_team(
                 db, user_id, task_id, scoped_team_id
             )
+            member = require_team_member(db, scoped_team_id, user_id)
+            if getattr(task, "approval_request_id", None) and member.role not in (
+                "owner",
+                "admin",
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="该任务已绑定审批申请，成员不能编辑；如需变更请重新提交任务",
+                )
             payload = body.model_dump(exclude_unset=True)
             schedule_field_present = _migration_schedule_payload_has_field(payload)
             existing_has_schedule = bool(task.schedule_enabled) or bool(
@@ -5821,6 +5938,8 @@ async def update_migration_task(
                     source_image=payload.get("source_image", task.source_image),
                     target_registry_name=effective_target_registry,
                     target_image=payload.get("target_image", task.target_image),
+                    schedule_cron=effective_schedule_cron,
+                    schedule_enabled=bool(effective_schedule_enabled),
                 )
                 OperationLogger.log(
                     username,
@@ -5902,12 +6021,22 @@ async def execute_migration_task(
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
             task_row = require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
-            if (
-                _registry_write_requires_approval(
-                    task_row.target_registry_name, scoped_team_id, user_id
-                )
-                and not getattr(task_row, "approval_request_id", None)
+            if _registry_write_requires_approval(
+                task_row.target_registry_name, scoped_team_id, user_id
             ):
+                existing_approval = None
+                if getattr(task_row, "approval_request_id", None):
+                    from backend.team_approval_manager import TeamApprovalManager
+
+                    existing_approval = TeamApprovalManager().get_request(
+                        task_row.approval_request_id
+                    )
+                if existing_approval and existing_approval.get("status") in (
+                    "pending",
+                    "approved",
+                    "running",
+                ):
+                    return _approval_required_response(existing_approval)
                 approval_request = _create_migration_approval_request(
                     team_id=scoped_team_id,
                     user_id=user_id,
@@ -5916,6 +6045,7 @@ async def execute_migration_task(
                     source_image=task_row.source_image,
                     target_registry_name=task_row.target_registry_name,
                     target_image=task_row.target_image,
+                    existing_task_id=task_id,
                 )
                 OperationLogger.log(
                     username,

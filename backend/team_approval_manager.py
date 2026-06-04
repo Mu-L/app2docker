@@ -134,7 +134,7 @@ def _execute_image_write_request(
     title: str,
 ) -> Dict[str, Any]:
     if not registry_write_requires_approval(
-        payload["target_registry_name"], request_row.team_id, reviewer_id
+        payload["target_registry_name"], request_row.team_id, request_row.requested_by
     ):
         raise HTTPException(status_code=400, detail="目标仓库不是认证仓库，无需团队申请")
 
@@ -145,6 +145,18 @@ def _execute_image_write_request(
             status_code=409,
             detail="目标镜像标签已存在，申请未允许覆盖，无法通过审核",
         )
+
+    existing_result = getattr(request_row, "result", None) or {}
+    existing_task_id = existing_result.get("migration_task_id")
+    if existing_task_id:
+        if not MigrationTaskManager().execute_task(existing_task_id, trigger_source="approval"):
+            raise HTTPException(status_code=400, detail="任务无法启动，可能正在执行或审核状态异常")
+        return {
+            **existing_result,
+            "migration_task_id": existing_task_id,
+            "source_image": payload["source_image"],
+            "target_image": payload["target_image"],
+        }
 
     task_id = MigrationTaskManager().create_task(
         task_name=request_row.title or title,
@@ -297,6 +309,28 @@ class TeamApprovalManager:
         finally:
             db.close()
 
+    def set_request_result(self, request_id: str, result: Dict[str, Any]) -> bool:
+        db = get_db_session()
+        try:
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                return False
+            merged = dict(row.result or {})
+            merged.update(result or {})
+            row.result = merged
+            row.updated_at = datetime.now()
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def list_requests(
         self,
         *,
@@ -389,6 +423,7 @@ class TeamApprovalManager:
                 title=row.title,
                 requested_by=row.requested_by,
                 payload=dict(row.payload or {}),
+                result=dict(row.result or {}),
             )
             db.commit()
         except HTTPException:

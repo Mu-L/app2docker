@@ -35,6 +35,58 @@ def _usernames_by_id(user_ids):
         db.close()
 
 
+def _approval_info_by_ids(request_ids):
+    ids = [rid for rid in set(request_ids or []) if rid]
+    if not ids:
+        return {}
+    from backend.database import get_db_session
+    from backend.models import TeamApprovalRequest
+
+    db = get_db_session()
+    try:
+        rows = (
+            db.query(TeamApprovalRequest)
+            .filter(TeamApprovalRequest.request_id.in_(ids))
+            .all()
+        )
+        return {
+            row.request_id: {
+                "approval_status": row.status or "",
+                "approval_request_type": row.request_type or "",
+                "approval_title": row.title or "",
+                "approval_review_note": row.review_note or "",
+                "approval_error": row.error or "",
+                "approval_reviewed_at": (
+                    row.reviewed_at.isoformat() if row.reviewed_at else None
+                ),
+                "approval_created_at": (
+                    row.created_at.isoformat() if row.created_at else None
+                ),
+            }
+            for row in rows
+        }
+    finally:
+        db.close()
+
+
+def _approval_allows_execution(request_id: str) -> bool:
+    if not request_id:
+        return False
+    from backend.database import get_db_session
+    from backend.models import TeamApprovalRequest
+
+    db = get_db_session()
+    try:
+        row = (
+            db.query(TeamApprovalRequest.status)
+            .filter(TeamApprovalRequest.request_id == request_id)
+            .first()
+        )
+        return bool(row and row.status in ("approved", "running"))
+    finally:
+        db.close()
+
+
 def _parse_image_ref(image_ref: str) -> Tuple[str, str]:
     """解析完整镜像引用为 repository 与 tag。"""
     ref = (image_ref or "").strip()
@@ -505,6 +557,21 @@ def registry_write_requires_approval(
     """Return True when writing to this configured registry uses credentials."""
     if not (registry_name or "").strip():
         return False
+    if team_id and user_id:
+        from backend.database import get_db_session
+        from backend.models import TeamMember
+
+        db = get_db_session()
+        try:
+            member = (
+                db.query(TeamMember)
+                .filter(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
+                .first()
+            )
+            if member and member.role in ("owner", "admin"):
+                return False
+        finally:
+            db.close()
     cfg = _load_team_registry_config(registry_name, team_id, user_id)
     return bool(cfg.get("username") and cfg.get("password"))
 
@@ -543,9 +610,15 @@ class MigrationTaskManager:
         self.lock = threading.Lock()
         self._running_threads: Dict[str, threading.Thread] = {}
 
-    def _to_dict(self, task, creator_username: str = None) -> dict:
+    def _to_dict(
+        self,
+        task,
+        creator_username: str = None,
+        approval_info: Optional[dict] = None,
+    ) -> dict:
         if not task:
             return {}
+        approval_info = approval_info or {}
         return {
             "task_id": task.task_id,
             "task_name": task.task_name,
@@ -574,6 +647,13 @@ class MigrationTaskManager:
             "team_id": getattr(task, "team_id", None),
             "created_by": getattr(task, "created_by", None),
             "approval_request_id": getattr(task, "approval_request_id", None),
+            "approval_status": approval_info.get("approval_status", ""),
+            "approval_request_type": approval_info.get("approval_request_type", ""),
+            "approval_title": approval_info.get("approval_title", ""),
+            "approval_review_note": approval_info.get("approval_review_note", ""),
+            "approval_error": approval_info.get("approval_error", ""),
+            "approval_reviewed_at": approval_info.get("approval_reviewed_at"),
+            "approval_created_at": approval_info.get("approval_created_at"),
             "created_by_username": creator_username,
             "created_at": (
                 task.created_at.isoformat() if task.created_at else None
@@ -603,10 +683,16 @@ class MigrationTaskManager:
                 q = q.filter(MigrationTask.created_by == created_by)
             rows = q.order_by(MigrationTask.created_at.desc()).all()
             usernames = _usernames_by_id([getattr(r, "created_by", None) for r in rows])
+            approvals = _approval_info_by_ids(
+                [getattr(r, "approval_request_id", None) for r in rows]
+            )
             return [
                 self._to_dict(
                     r,
                     creator_username=usernames.get(getattr(r, "created_by", None)),
+                    approval_info=approvals.get(
+                        getattr(r, "approval_request_id", None)
+                    ),
                 )
                 for r in rows
             ]
@@ -629,7 +715,35 @@ class MigrationTaskManager:
             username = _usernames_by_id([getattr(row, "created_by", None)]).get(
                 getattr(row, "created_by", None)
             )
-            return self._to_dict(row, creator_username=username)
+            approvals = _approval_info_by_ids([getattr(row, "approval_request_id", None)])
+            return self._to_dict(
+                row,
+                creator_username=username,
+                approval_info=approvals.get(getattr(row, "approval_request_id", None)),
+            )
+        finally:
+            db.close()
+
+    def bind_approval_request(self, task_id: str, request_id: str) -> bool:
+        from backend.database import get_db_session
+        from backend.models import MigrationTask
+
+        db = get_db_session()
+        try:
+            task = (
+                db.query(MigrationTask)
+                .filter(MigrationTask.task_id == task_id)
+                .first()
+            )
+            if not task:
+                return False
+            task.approval_request_id = request_id
+            task.updated_at = datetime.now()
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -923,6 +1037,13 @@ class MigrationTaskManager:
                 task.updated_at = datetime.now()
                 db.commit()
                 return False
+            if migration_task_requires_approval(task) and not _approval_allows_execution(
+                getattr(task, "approval_request_id", None)
+            ):
+                task.error = "任务正在等待团队审核，审核通过后会自动执行"
+                task.updated_at = datetime.now()
+                db.commit()
+                return False
             task.status = "pending"
             task.error = ""
             task.updated_at = datetime.now()
@@ -954,6 +1075,13 @@ class MigrationTaskManager:
             ):
                 task.status = "failed"
                 task.error = "写入认证镜像仓库必须先提交团队申请并审批通过"
+                task.updated_at = datetime.now()
+                db.commit()
+                return False
+            if migration_task_requires_approval(task) and not _approval_allows_execution(
+                getattr(task, "approval_request_id", None)
+            ):
+                task.error = "任务正在等待团队审核，审核通过后会自动执行"
                 task.updated_at = datetime.now()
                 db.commit()
                 return False
