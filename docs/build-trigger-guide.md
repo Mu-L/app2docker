@@ -1,10 +1,10 @@
 # 镜像构建触发指南
 
-本文介绍 App2Docker 的三种构建触发方式：
+本文介绍 App2Docker 的构建触发方式：
 
-1. **Web 界面 - 临时 Git**：无需预先创建数据源，输入地址即可构建
+1. **Web 界面 - 镜像构建**：在构建向导中选择或新建 Git 数据源后构建
 2. **API - 配置文件触发**：通过 `POST /api/build-with-config`，配合仓库根目录的 `.app2docker.yaml`
-3. **API - 常规 Git 构建**：`POST /api/build-from-source`（含临时认证参数）
+3. **API - 常规 Git 构建**：`POST /api/build-from-source`（支持 `source_id` 或临时认证参数）
 
 ---
 
@@ -17,6 +17,8 @@
 | JWT Token | `Authorization: Bearer <token>` | 登录后获取，有效期 24h |
 | App Key | `Authorization: Bearer <app_key>` | 用户管理 → APP Key，适合 CI/CD |
 
+**Token / App Key 即代表调用者身份**：后端据此定位用户，并自动匹配该用户的个人 Git 数据源（按 `git_url`）。因此 curl 典型用法是 **只传 `git_url`**，无需每次带 `team_id`（仅当用户属于多个团队时才需要显式指定）。
+
 ```bash
 # 登录获取 Token
 curl -X POST http://<host>:8000/api/login \
@@ -24,21 +26,42 @@ curl -X POST http://<host>:8000/api/login \
   -d '{"username": "admin", "password": "admin"}'
 ```
 
+### API 凭据策略（curl / CI）
+
+| 场景 | 请求体 | 行为 |
+|------|--------|------|
+| 日常触发 | 仅 `git_url` | 使用 Token 对应用户已保存的**个人**数据源凭据 |
+| 首次 / 轮换 Token | `git_url` + `git_username` / `git_password`（或 `temp_git_*`） | 构建成功后凭据写入个人数据源，后续可只传 URL |
+| 显式指定 | `source_id` | 使用指定数据源（需有 `run` 权限） |
+
+> `temp_git_password` / `git_password` 不会出现在日志中；写入个人数据源后加密存储，其他团队成员不可见。
+
 ---
 
-## 方式一：Web 界面 - 临时 Git
+## 方式一：Web 界面 - 镜像构建
 
-适用于一次性构建，无需在「数据源」中预先登记仓库。
+适用于在平台内手动发起构建。
 
 1. 进入 **镜像构建** 页面
-2. 步骤 1 选择 **临时 Git**
-3. 填写：
-   - **Git 仓库地址**（必填）
-   - **用户名 / 密码或 Token**（私有仓库选填）
-   - **分支/标签**（选填，不填则使用仓库默认分支）
-4. 按向导完成模板、镜像名等配置后提交
+2. 步骤 1 选择 **Git 数据源**
+3. 从下拉列表选择已有数据源，或点击 **新建数据源**：
+   - 填写 **数据源名称**、**Git 仓库地址**（必填）
+   - 私有仓库可填写 **用户名 / 密码或 Token**
+   - 点击 **验证并保存**，系统自动创建数据源
+4. 选择 **分支/标签** 后，按向导完成模板、镜像名等配置并提交
 
-> 临时认证信息仅用于本次构建，不会写入数据库。
+新建的数据源会同步出现在 **数据源管理** 页面，后续构建可直接复用。
+
+### 团队 / 个人数据源
+
+| 类型 | 创建方式 | 可见范围 | 凭据 |
+|------|----------|----------|------|
+| **个人** | 构建页「新建数据源」（固定个人） | 仅创建者 + 团队管理员 | 各自 Token，互不可见 |
+| **团队** | 数据源管理页（管理员） | `private`：授权成员；`team_public`：全团可见 | 团队共用 Token |
+
+- 构建页新建始终为 **个人** 数据源；同一团队、同一用户、同一 URL 不会重复创建，会 **更新凭据**。
+- 管理员可在 **数据源管理** 创建 **团队** 数据源，并设置 **团内公开** 或 **成员授权**。
+- 列表与构建下拉会显示 **个人 / 团队 / 团内公开** 标识及创建者名称。
 
 ---
 
@@ -155,7 +178,7 @@ template_params:
 | `image_name` | 否 | 覆盖配置文件中的镜像名 |
 | `tag` | 否 | 覆盖配置文件中的镜像 tag |
 | `push` | 否 | 覆盖配置文件中的 push 设置 |
-| `team_id` | 否 | 团队 ID（多团队用户必填；Web 端由拦截器自动附加） |
+| `team_id` | 否 | 团队 ID；**单团队用户可省略**（由 Token 定位用户后自动选用唯一团队）；多团队用户必填 |
 
 > 仅显式传入的参数会覆盖配置文件；未传的字段以配置文件为准。
 
@@ -164,18 +187,19 @@ template_params:
 ```bash
 HOST=http://localhost:8000
 TOKEN=<your_jwt_or_app_key>
+# TEAM_ID 仅多团队用户需要：-d '{"team_id":"<id>", "git_url":"..."}'
 ```
 
-**场景 A：只给 Git 地址**（默认分支 → profile=default → `.app2docker.yaml`）
+**最简用法**（Token 定位用户 + 已保存凭据；默认分支 → `.app2docker.yaml`）
 
 ```bash
-curl -X POST "$HOST/api/build-with-config?team_id=<team_id>" \
+curl -X POST "$HOST/api/build-with-config" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"git_url": "https://github.com/user/repo.git"}'
 ```
 
-**场景 A：指定分支**（profile 自动=develop → `.app2docker-develop.yaml`）
+**指定分支**（profile 自动=develop → `.app2docker-develop.yaml`）
 
 ```bash
 curl -X POST "$HOST/api/build-with-config" \
@@ -184,7 +208,7 @@ curl -X POST "$HOST/api/build-with-config" \
   -d '{"git_url": "https://github.com/user/repo.git", "branch": "develop"}'
 ```
 
-**场景 B：分支与 profile 解耦**（clone main，使用 prod 配置）
+**分支与 profile 解耦**（clone main，使用 prod 配置）
 
 ```bash
 curl -X POST "$HOST/api/build-with-config" \
@@ -193,7 +217,7 @@ curl -X POST "$HOST/api/build-with-config" \
   -d '{"git_url": "https://github.com/user/repo.git", "branch": "main", "profile": "prod"}'
 ```
 
-**场景 C：tag 触发**（checkout v1.0 → profile 自动=v1.0）
+**tag 触发**（checkout v1.0 → profile 自动=v1.0）
 
 ```bash
 curl -X POST "$HOST/api/build-with-config" \
@@ -202,34 +226,7 @@ curl -X POST "$HOST/api/build-with-config" \
   -d '{"git_url": "https://github.com/user/repo.git", "tag_name": "v1.0"}'
 ```
 
-**场景 D：tag + 显式 profile**（checkout v1.0，使用 release 配置）
-
-```bash
-curl -X POST "$HOST/api/build-with-config" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"git_url": "https://github.com/user/repo.git", "tag_name": "v1.0", "profile": "release"}'
-```
-
-**场景 E：只指定 profile**（默认分支 + prod 配置；若配置中有 `git.branch` 则用之）
-
-```bash
-curl -X POST "$HOST/api/build-with-config" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"git_url": "https://github.com/user/repo.git", "profile": "prod"}'
-```
-
-**覆盖配置文件参数**
-
-```bash
-curl -X POST "$HOST/api/build-with-config" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"git_url": "https://github.com/user/repo.git", "branch": "develop", "push": false, "tag": "custom-tag"}'
-```
-
-**私有仓库**
+**私有仓库：首次带凭据**（写入个人数据源，之后可只传 `git_url`）
 
 ```bash
 curl -X POST "$HOST/api/build-with-config" \
@@ -283,9 +280,9 @@ curl -X POST "$HOST/api/build-from-source" \
   }'
 ```
 
-### 临时 Git 认证参数
+### API 临时认证参数（首次 / 轮换 Token）
 
-配合 Web「临时 Git」或脚本构建私有仓库时，可附加：
+私有仓库**首次**通过 API 构建时，可附加认证参数；平台会按 Token 对应用户写入**个人**数据源，之后同一 `git_url` 只需 Token + URL：
 
 | 参数 | 说明 |
 |------|------|
@@ -293,6 +290,7 @@ curl -X POST "$HOST/api/build-from-source" \
 | `temp_git_password` | Git 密码或 Access Token |
 
 ```bash
+# 首次：带凭据
 curl -X POST "$HOST/api/build-from-source" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -307,9 +305,23 @@ curl -X POST "$HOST/api/build-from-source" \
     "tag": "latest",
     "push": "on"
   }'
+
+# 后续：仅 URL（自动使用已保存的个人凭据）
+curl -X POST "$HOST/api/build-from-source" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "git_url": "https://github.com/user/private-repo.git",
+    "branch": "main",
+    "project_type": "jar",
+    "template": "dragonwell21-upload",
+    "imagename": "myapp/demo",
+    "tag": "latest",
+    "push": "on"
+  }'
 ```
 
-认证优先级：**已注册数据源** > **临时认证参数** > **全局 Git 配置**（`data/config.yml`）。
+认证优先级：**显式 `source_id`** > **Token 对应用户的个人数据源（同 `git_url`）** > **本次请求的临时凭据（首次写入个人源）** > **全局 Git 配置**（`data/config.yml`）。
 
 ---
 
@@ -317,9 +329,9 @@ curl -X POST "$HOST/api/build-from-source" \
 
 | 方式 | 适用场景 | 配置来源 | 是否需要预建数据源 |
 |------|----------|----------|-------------------|
-| Web 临时 Git | 手动一次性构建 | 界面填写 | 否 |
+| Web 镜像构建 | 手动构建 | 界面选择/新建数据源 | 可在构建流程中新建 |
 | `/api/build-with-config` | CI/CD、自动化 | 仓库 `.app2docker.yaml` | 否 |
-| `/api/build-from-source` | 脚本、完整参数控制 | 请求体 | 否（可用 `source_id` 引用数据源） |
+| `/api/build-from-source` | 脚本、完整参数控制 | 请求体 | 否（可用 `source_id` 或临时认证） |
 | 流水线 Webhook | Push 自动触发 | 平台流水线配置 | 是（或填 git_url） |
 
 ---
@@ -336,6 +348,14 @@ curl -X POST "$HOST/api/build-from-source" \
 - `profile`：决定用哪份构建配置（`.app2docker-{profile}.yaml`）
 - 两者可解耦，例如 `branch=main, profile=prod`
 
-**Q：临时 Git 密码会保存吗？**
+**Q：curl 需要每次传 `team_id` 吗？**
 
-不会。`temp_git_password` / `git_password` 仅用于本次 clone，不写入数据库。
+不需要。`Authorization` 中的 Token / App Key 已定位用户；若该用户只属于一个团队，后端自动选用该团队。仅当用户加入多个团队时，需在 body 中传 `team_id`。
+
+**Q：curl 需要每次传 Git 凭据吗？**
+
+不需要。首次（或 Token 轮换）传 `git_username`/`git_password` 或 `temp_git_*` 后，凭据会写入**当前用户**的个人数据源；后续同一 `git_url` 只传 URL 即可。
+
+**Q：多人使用同一 Git URL 但凭据不同怎么办？**
+
+每人使用自己的 Token / App Key 调用 API，凭据分别存入各自的个人数据源，互不可见。团队管理员也可在数据源管理创建 **团队** 数据源并 **团内公开** 或 **成员授权**。

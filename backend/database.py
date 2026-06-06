@@ -184,6 +184,7 @@ def _run_init_db_migrations():
     # 迁移：镜像迁移任务表与菜单权限
     migrate_add_migration_tasks_table()
     migrate_add_team_approval_requests_table()
+    migrate_add_git_source_scope()
 
     print(f"✅ 数据库初始化完成: {DB_FILE}")
 
@@ -1653,6 +1654,38 @@ def _add_column_if_missing(cursor, table: str, column: str, ddl: str):
         print(f"✅ {column} 字段添加成功")
     else:
         print(f"✅ {table}.{column} 已存在")
+
+
+def migrate_add_git_source_scope():
+    """迁移：git_sources 表添加 scope / visibility 字段"""
+    if not os.path.exists(DB_FILE):
+        return
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='git_sources'"
+        )
+        if cursor.fetchone():
+            _add_column_if_missing(
+                cursor, "git_sources", "scope", "scope VARCHAR(20) DEFAULT 'personal'"
+            )
+            _add_column_if_missing(
+                cursor,
+                "git_sources",
+                "visibility",
+                "visibility VARCHAR(20) DEFAULT 'private'",
+            )
+            cursor.execute(
+                "UPDATE git_sources SET scope = 'personal' WHERE scope IS NULL OR scope = ''"
+            )
+            cursor.execute(
+                "UPDATE git_sources SET visibility = 'private' WHERE visibility IS NULL OR visibility = ''"
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ git_sources scope/visibility 迁移失败: {e}")
 
 
 def migrate_add_team_task_cleanup_days():

@@ -190,6 +190,8 @@ class GitSource(Base):
 
     team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=True)
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    scope = Column(String(20), default="personal")  # personal | team
+    visibility = Column(String(20), default="private")  # private | team_public
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

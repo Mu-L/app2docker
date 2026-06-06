@@ -47,7 +47,7 @@
     </div>
 
     <div class="hidden md:block">
-      <Table min-width-class="min-w-[56rem]">
+      <Table min-width-class="min-w-[48rem]">
         <TableHeader>
           <TableRow>
             <TableHead>名称</TableHead>

@@ -3049,6 +3049,7 @@ async def upload_file(
 
 @router.post("/verify-git-repo")
 async def verify_git_repo(
+    http_request: Request,
     git_url: str = Body(..., embed=True, description="Git 仓库地址"),
     save_as_source: bool = Body(False, embed=True, description="是否保存为数据源"),
     source_name: Optional[str] = Body(
@@ -3064,6 +3065,12 @@ async def verify_git_repo(
     ),
     branch: Optional[str] = Body(
         None, embed=True, description="指定分支（用于扫描该分支的 Dockerfile）"
+    ),
+    team_id: Optional[str] = Body(
+        None, embed=True, description="团队 ID（保存为数据源时必填）"
+    ),
+    scope: str = Body(
+        "personal", embed=True, description="数据源类型：personal | team"
     ),
 ):
     """验证 Git 仓库并获取分支和标签列表"""
@@ -3261,13 +3268,42 @@ async def verify_git_repo(
                 raise HTTPException(
                     status_code=400, detail="保存为数据源时必须提供数据源名称"
                 )
+            if not team_id:
+                raise HTTPException(
+                    status_code=400, detail="保存为数据源时必须提供 team_id"
+                )
 
             try:
+                auth_username = require_auth(http_request)
+                user_id = _resolve_user_id(http_request)
+                save_scope = (scope or "personal").strip().lower()
+                if save_scope not in ("personal", "team"):
+                    raise HTTPException(
+                        status_code=400, detail="scope 必须是 personal 或 team"
+                    )
+
+                from backend.database import get_db_session
+
+                db = get_db_session()
+                try:
+                    require_team_member(db, team_id, user_id)
+                    if save_scope == "team":
+                        require_team_admin(db, team_id, user_id)
+                finally:
+                    db.close()
+
                 source_manager = GitSourceManager()
-                # 检查是否已存在相同 URL 的数据源
-                existing_source = source_manager.get_source_by_url(git_url)
+                existing_source = None
+                if save_scope == "personal":
+                    existing_source = source_manager.get_personal_source_by_url(
+                        team_id, user_id, git_url
+                    )
+                else:
+                    existing_source = source_manager.get_source_by_scope_url(
+                        team_id, git_url, save_scope
+                    )
+
                 if existing_source:
-                    # 更新现有数据源（如果提供了认证信息，也更新）
                     source_manager.update_source(
                         source_id=existing_source["source_id"],
                         name=source_name,
@@ -3278,7 +3314,6 @@ async def verify_git_repo(
                         username=username if username is not None else None,
                         password=password if password is not None else None,
                     )
-                    # 更新扫描到的 Dockerfile
                     if result.get("dockerfiles"):
                         for dockerfile_path, content in result["dockerfiles"].items():
                             source_manager.update_dockerfile(
@@ -3288,8 +3323,7 @@ async def verify_git_repo(
                     result["source_saved"] = True
                     result["source_updated"] = True
                 else:
-                    # 创建新数据源
-                    source_id = source_manager.create_source(
+                    new_source_id = source_manager.create_source(
                         name=source_name,
                         git_url=git_url,
                         description=source_description or "",
@@ -3298,19 +3332,41 @@ async def verify_git_repo(
                         default_branch=result["default_branch"],
                         username=username,
                         password=password,
+                        team_id=team_id,
+                        created_by=user_id,
+                        scope=save_scope,
+                        visibility="private" if save_scope == "personal" else "private",
                     )
-                    # 保存扫描到的 Dockerfile
                     if result.get("dockerfiles"):
                         for dockerfile_path, content in result["dockerfiles"].items():
                             source_manager.update_dockerfile(
-                                source_id, dockerfile_path, content
+                                new_source_id, dockerfile_path, content
                             )
-                    result["source_id"] = source_id
+                    db = get_db_session()
+                    try:
+                        grant_creator_admin(db, "git_source", new_source_id, user_id)
+                    finally:
+                        db.close()
+                    result["source_id"] = new_source_id
                     result["source_saved"] = True
                     result["source_updated"] = False
+
+                OperationLogger.log(
+                    auth_username,
+                    "git_source_create"
+                    if not result.get("source_updated")
+                    else "git_source_update",
+                    {
+                        "source_id": result["source_id"],
+                        "name": source_name,
+                        "git_url": git_url,
+                        "scope": save_scope,
+                    },
+                )
+            except HTTPException:
+                raise
             except Exception as e:
                 print(f"⚠️ 保存数据源失败: {e}")
-                # 即使保存失败，也返回验证结果
                 result["source_saved"] = False
                 result["source_error"] = str(e)
 
@@ -3443,6 +3499,66 @@ async def parse_dockerfile_services_api(
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 
+def _resolve_api_git_source(
+    db,
+    user_id: str,
+    team_id: str,
+    git_url: str,
+    source_id: Optional[str] = None,
+    git_username: Optional[str] = None,
+    git_password: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    API 构建：Bearer Token / App Key 已定位用户，据此解析数据源与 Git 凭据。
+    - 未传 source_id 时，按「当前用户 + 团队 + git_url」匹配个人数据源
+    - 首次传入凭据时写入个人数据源，后续仅需 git_url
+    返回 (source_id, temp_username, temp_password)。
+    """
+    from backend.git_source_manager import GitSourceManager
+    from backend.resource_permissions import (
+        grant_creator_admin,
+        require_resource_permission,
+    )
+
+    manager = GitSourceManager()
+
+    if source_id:
+        require_resource_permission(db, user_id, "git_source", source_id, "run")
+        if git_username or git_password:
+            manager.update_source(
+                source_id=source_id,
+                username=git_username if git_username is not None else None,
+                password=git_password if git_password is not None else None,
+            )
+        return source_id, None, None
+
+    personal = manager.get_personal_source_by_url(team_id, user_id, git_url)
+    if personal:
+        sid = personal["source_id"]
+        require_resource_permission(db, user_id, "git_source", sid, "run")
+        if git_username or git_password:
+            manager.update_source(
+                source_id=sid,
+                username=git_username if git_username is not None else None,
+                password=git_password if git_password is not None else None,
+            )
+        return sid, None, None
+
+    if git_username or git_password:
+        sid, created = manager.upsert_personal_credentials(
+            team_id=team_id,
+            created_by=user_id,
+            git_url=git_url,
+            username=git_username,
+            password=git_password,
+        )
+        if created:
+            grant_creator_admin(db, "git_source", sid, user_id)
+        return sid, None, None
+
+    return None, None, None
+
+
 @router.post("/build-from-source")
 async def build_from_source(
     request: Request,
@@ -3501,8 +3617,21 @@ async def build_from_source(
 
         db = get_db_session()
         try:
-            scoped_team_id = resolve_team_scope_from_request(db, username, team_id)
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
+                db, username, team_id
+            )
             user_id = get_user_id_by_username(db, username)
+            resolved_source_id, resolved_temp_user, resolved_temp_pass = (
+                _resolve_api_git_source(
+                    db,
+                    user_id,
+                    scoped_team_id,
+                    git_url,
+                    source_id=source_id,
+                    git_username=temp_git_username,
+                    git_password=temp_git_password,
+                )
+            )
         finally:
             db.close()
 
@@ -3577,7 +3706,7 @@ async def build_from_source(
                     sub_path=sub_path,
                     use_project_dockerfile=use_project_dockerfile,
                     dockerfile_name=dockerfile_name,
-                    source_id=source_id,
+                    source_id=resolved_source_id,
                     selected_services=selected_services,
                     service_push_config=service_push_config,
                     push_mode=push_mode or "multi",
@@ -3587,8 +3716,8 @@ async def build_from_source(
                     or [],  # 传递资源包配置
                     team_id=scoped_team_id,
                     created_by=user_id,
-                    temp_git_username=temp_git_username,
-                    temp_git_password=temp_git_password,
+                    temp_git_username=resolved_temp_user,
+                    temp_git_password=resolved_temp_pass,
                 )
                 if not task_id:
                     raise RuntimeError("任务创建失败：未返回 task_id")
@@ -3678,10 +3807,20 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
 
         db = get_db_session()
         try:
-            scoped_team_id = resolve_team_scope_from_request(
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
                 db, username, body.team_id
             )
             user_id = get_user_id_by_username(db, username)
+            resolved_source_id, resolved_temp_user, resolved_temp_pass = (
+                _resolve_api_git_source(
+                    db,
+                    user_id,
+                    scoped_team_id,
+                    body.git_url,
+                    git_username=body.git_username,
+                    git_password=body.git_password,
+                )
+            )
         finally:
             db.close()
 
@@ -3694,10 +3833,19 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
         )
 
         git_config = get_git_config()
-        if body.git_username:
-            git_config["username"] = body.git_username
-        if body.git_password:
-            git_config["password"] = body.git_password
+        if resolved_source_id:
+            from backend.git_source_manager import GitSourceManager
+
+            source_auth = GitSourceManager().get_auth_config(resolved_source_id)
+            if source_auth.get("username"):
+                git_config["username"] = source_auth["username"]
+            if source_auth.get("password"):
+                git_config["password"] = source_auth["password"]
+        else:
+            if body.git_username:
+                git_config["username"] = body.git_username
+            if body.git_password:
+                git_config["password"] = body.git_password
 
         config_source = None
         if not branch and not tag_name:
@@ -3733,8 +3881,9 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
             selected_template=body.template or "",
             project_type=body.project_type or "jar",
             branch=branch,
-            temp_git_username=body.git_username,
-            temp_git_password=body.git_password,
+            source_id=resolved_source_id,
+            temp_git_username=resolved_temp_user,
+            temp_git_password=resolved_temp_pass,
             profile=body.profile,
             tag_name=tag_name,
             config_overrides=config_overrides,
@@ -9500,6 +9649,8 @@ class CreateGitSourceRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     dockerfiles: Optional[dict] = None  # Dockerfile 字典
+    scope: str = "personal"  # personal | team
+    visibility: str = "private"  # private | team_public
 
 
 class UpdateGitSourceRequest(BaseModel):
@@ -9512,6 +9663,8 @@ class UpdateGitSourceRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     dockerfiles: Optional[dict] = None  # Dockerfile 字典
+    scope: Optional[str] = None
+    visibility: Optional[str] = None
 
 
 @router.get("/git-sources")
@@ -9582,45 +9735,112 @@ async def create_git_source(request: CreateGitSourceRequest, http_request: Reque
         user_id = _resolve_user_id(http_request)
         from backend.database import get_db_session
 
+        scope = (request.scope or "personal").strip().lower()
+        visibility = (request.visibility or "private").strip().lower()
+        if scope not in ("personal", "team"):
+            raise HTTPException(status_code=400, detail="scope 必须是 personal 或 team")
+        if visibility not in ("private", "team_public"):
+            raise HTTPException(
+                status_code=400, detail="visibility 必须是 private 或 team_public"
+            )
+
         db = get_db_session()
         try:
             require_team_member(db, request.team_id, user_id)
+            if scope == "team":
+                require_team_admin(db, request.team_id, user_id)
+            else:
+                visibility = "private"
         finally:
             db.close()
+
         manager = GitSourceManager()
+        source_updated = False
 
-        source_id = manager.create_source(
-            name=request.name,
-            git_url=request.git_url,
-            description=request.description,
-            branches=request.branches,
-            tags=request.tags,
-            default_branch=request.default_branch,
-            username=request.username,
-            password=request.password,
-            dockerfiles=request.dockerfiles or {},
-            team_id=request.team_id,
-            created_by=user_id,
-        )
+        if scope == "personal":
+            existing = manager.get_personal_source_by_url(
+                request.team_id, user_id, request.git_url
+            )
+            if existing:
+                manager.update_source(
+                    source_id=existing["source_id"],
+                    name=request.name,
+                    description=request.description,
+                    branches=request.branches,
+                    tags=request.tags,
+                    default_branch=request.default_branch,
+                    username=request.username,
+                    password=request.password,
+                )
+                if request.dockerfiles:
+                    for dockerfile_path, content in request.dockerfiles.items():
+                        manager.update_dockerfile(
+                            existing["source_id"], dockerfile_path, content
+                        )
+                source_id = existing["source_id"]
+                source_updated = True
+            else:
+                source_id = manager.create_source(
+                    name=request.name,
+                    git_url=request.git_url,
+                    description=request.description,
+                    branches=request.branches,
+                    tags=request.tags,
+                    default_branch=request.default_branch,
+                    username=request.username,
+                    password=request.password,
+                    dockerfiles=request.dockerfiles or {},
+                    team_id=request.team_id,
+                    created_by=user_id,
+                    scope=scope,
+                    visibility=visibility,
+                )
+        else:
+            source_id = manager.create_source(
+                name=request.name,
+                git_url=request.git_url,
+                description=request.description,
+                branches=request.branches,
+                tags=request.tags,
+                default_branch=request.default_branch,
+                username=request.username,
+                password=request.password,
+                dockerfiles=request.dockerfiles or {},
+                team_id=request.team_id,
+                created_by=user_id,
+                scope=scope,
+                visibility=visibility,
+            )
 
-        db = get_db_session()
-        try:
-            grant_creator_admin(db, "git_source", source_id, user_id)
-        finally:
-            db.close()
+        if not source_updated:
+            db = get_db_session()
+            try:
+                grant_creator_admin(db, "git_source", source_id, user_id)
+            finally:
+                db.close()
 
         # 记录操作日志
         OperationLogger.log(
             username,
-            "git_source_create",
+            "git_source_create" if not source_updated else "git_source_update",
             {
                 "source_id": source_id,
                 "name": request.name,
                 "git_url": request.git_url,
+                "scope": scope,
+                "visibility": visibility,
             },
         )
 
-        return JSONResponse({"source_id": source_id, "message": "数据源创建成功"})
+        return JSONResponse(
+            {
+                "source_id": source_id,
+                "message": "数据源更新成功" if source_updated else "数据源创建成功",
+                "source_updated": source_updated,
+            }
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
 
@@ -9637,10 +9857,43 @@ async def update_git_source(
         username = require_auth(http_request)
         user_id = _resolve_user_id(http_request)
         from backend.database import get_db_session
+        from backend.models import GitSource
 
         db = get_db_session()
         try:
             require_resource_permission(db, user_id, "git_source", source_id, "edit")
+            row = (
+                db.query(GitSource).filter(GitSource.source_id == source_id).first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="数据源不存在")
+
+            scope_update = request.scope
+            visibility_update = request.visibility
+            if scope_update is not None or visibility_update is not None:
+                if not row.team_id:
+                    raise HTTPException(
+                        status_code=400, detail="无团队归属的数据源不可修改范围"
+                    )
+                require_team_admin(db, row.team_id, user_id)
+                if scope_update is not None:
+                    s = (scope_update or "personal").strip().lower()
+                    if s not in ("personal", "team"):
+                        raise HTTPException(
+                            status_code=400, detail="scope 必须是 personal 或 team"
+                        )
+                if visibility_update is not None:
+                    v = (visibility_update or "private").strip().lower()
+                    if v not in ("private", "team_public"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="visibility 必须是 private 或 team_public",
+                        )
+                effective_scope = (
+                    (scope_update or row.scope or "personal").strip().lower()
+                )
+                if effective_scope == "personal":
+                    visibility_update = "private"
         finally:
             db.close()
         manager = GitSourceManager()
@@ -9655,6 +9908,8 @@ async def update_git_source(
             default_branch=request.default_branch,
             username=request.username,
             password=request.password,
+            scope=request.scope,
+            visibility=request.visibility,
         )
 
         if not success:
