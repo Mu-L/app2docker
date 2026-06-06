@@ -3487,6 +3487,12 @@ async def build_from_source(
         description="资源包配置列表 [{package_id, target_path}]，target_path 为相对路径，如 'test/b.txt' 或 'resources'",
     ),
     team_id: Optional[str] = Body(None, description="当前团队 ID"),
+    temp_git_username: Optional[str] = Body(
+        None, description="临时 Git 认证用户名（不持久化）"
+    ),
+    temp_git_password: Optional[str] = Body(
+        None, description="临时 Git 认证密码/Token（不持久化）"
+    ),
 ):
     """从 Git 源码构建镜像"""
     try:
@@ -3581,6 +3587,8 @@ async def build_from_source(
                     or [],  # 传递资源包配置
                     team_id=scoped_team_id,
                     created_by=user_id,
+                    temp_git_username=temp_git_username,
+                    temp_git_password=temp_git_password,
                 )
                 if not task_id:
                     raise RuntimeError("任务创建失败：未返回 task_id")
@@ -3639,6 +3647,134 @@ async def build_from_source(
         error_trace = traceback.format_exc()
         print(f"❌ 构建请求处理失败: {e}")
         print(f"错误堆栈:\n{error_trace}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"构建失败: {str(e)}")
+
+
+class BuildWithConfigRequest(BaseModel):
+    """通过 .app2docker.yaml 配置触发构建"""
+
+    git_url: str
+    branch: Optional[str] = None
+    tag_name: Optional[str] = None
+    profile: Optional[str] = None
+    git_username: Optional[str] = None
+    git_password: Optional[str] = None
+    project_type: Optional[str] = None
+    template: Optional[str] = None
+    image_name: Optional[str] = None
+    tag: Optional[str] = None
+    push: Optional[bool] = None
+    team_id: Optional[str] = None
+
+
+@router.post("/build-with-config")
+async def build_with_config(http_request: Request, body: BuildWithConfigRequest):
+    """通过 Git 地址 + profile 触发构建（支持 .app2docker.yaml 配置文件）"""
+    try:
+        username = require_auth(http_request)
+        from backend.database import get_db_session
+        from backend.team_scope import resolve_team_scope_from_request
+
+        db = get_db_session()
+        try:
+            scoped_team_id = resolve_team_scope_from_request(
+                db, username, body.team_id
+            )
+            user_id = get_user_id_by_username(db, username)
+        finally:
+            db.close()
+
+        from backend.app2docker_config import resolve_profile, peek_profile_config
+
+        branch = body.branch
+        tag_name = body.tag_name
+        resolved_profile = resolve_profile(
+            body.profile, branch=branch, tag_name=tag_name
+        )
+
+        git_config = get_git_config()
+        if body.git_username:
+            git_config["username"] = body.git_username
+        if body.git_password:
+            git_config["password"] = body.git_password
+
+        config_source = None
+        if not branch and not tag_name:
+            peeked, config_source = peek_profile_config(
+                body.git_url,
+                profile=resolved_profile,
+                branch=None,
+                git_config=git_config,
+            )
+            if peeked:
+                git_branch = (peeked.get("git") or {}).get("branch")
+                if git_branch:
+                    branch = git_branch
+
+        config_overrides = {}
+        if body.project_type:
+            config_overrides["project_type"] = body.project_type
+        if body.template:
+            config_overrides["template"] = body.template
+        if body.image_name:
+            config_overrides["image_name"] = body.image_name
+        if body.tag:
+            config_overrides["tag"] = body.tag
+        if body.push is not None:
+            config_overrides["push"] = body.push
+
+        manager = BuildManager()
+        task_id = manager.start_build_from_source(
+            git_url=body.git_url,
+            image_name=body.image_name or "myapp/demo",
+            tag=body.tag or "latest",
+            should_push=body.push if body.push is not None else False,
+            selected_template=body.template or "",
+            project_type=body.project_type or "jar",
+            branch=branch,
+            temp_git_username=body.git_username,
+            temp_git_password=body.git_password,
+            profile=body.profile,
+            tag_name=tag_name,
+            config_overrides=config_overrides,
+            config_only_overrides=True,
+            trigger_source="api",
+            team_id=scoped_team_id,
+            created_by=user_id,
+        )
+
+        try:
+            OperationLogger.log(
+                username,
+                "build_with_config",
+                {
+                    "task_id": task_id,
+                    "git_url": body.git_url,
+                    "branch": branch,
+                    "tag_name": tag_name,
+                    "profile": resolved_profile,
+                },
+                team_id=scoped_team_id,
+            )
+        except Exception as log_error:
+            print(f"⚠️ 记录操作日志失败: {log_error}")
+
+        return JSONResponse(
+            {
+                "task_id": task_id,
+                "branch": branch,
+                "tag_name": tag_name,
+                "profile": resolved_profile,
+                "config_source": config_source,
+                "message": "构建任务已启动",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"构建失败: {str(e)}")
 

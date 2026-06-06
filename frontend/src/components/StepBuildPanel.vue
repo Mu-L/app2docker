@@ -27,7 +27,7 @@
               :class="buildConfig.sourceType === 'file'
                   ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
                   : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="buildConfig.sourceType = 'file'"
+              @click="switchSourceType('file')"
             >
               <AppIcon  name="file-upload" /> 上传文件
             </button>
@@ -37,9 +37,19 @@
               :class="buildConfig.sourceType === 'git'
                   ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
                   : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="buildConfig.sourceType = 'git'"
+              @click="switchSourceType('git')"
             >
               <AppIcon  name="code-branch" /> Git 数据源
+            </button>
+            <button
+              type="button"
+              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
+              :class="buildConfig.sourceType === 'temp_git'
+                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
+                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
+              @click="switchSourceType('temp_git')"
+            >
+              <AppIcon name="link" /> 临时 Git
             </button>
           </div>
         </div>
@@ -145,6 +155,53 @@
               branchesAndTags.tags.length
             }}
             个标签
+          </div>
+        </div>
+
+        <!-- 临时 Git -->
+        <div v-if="buildConfig.sourceType === 'temp_git'" class="mb-3">
+          <label class="form-label">
+            Git 仓库地址 <span class="text-danger">*</span>
+          </label>
+          <input
+            v-model="buildConfig.tempGitUrl"
+            type="text"
+            class="form-control"
+            placeholder="https://github.com/user/repo.git"
+            required
+          />
+          <div class="row g-2 mt-2">
+            <div class="col-md-6">
+              <label class="form-label">用户名（选填）</label>
+              <input
+                v-model="buildConfig.tempGitUsername"
+                type="text"
+                class="form-control"
+                placeholder="私有仓库用户名"
+              />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">密码/Token（选填）</label>
+              <input
+                v-model="buildConfig.tempGitPassword"
+                type="password"
+                class="form-control"
+                placeholder="密码或 Access Token"
+              />
+            </div>
+          </div>
+          <div class="mt-2">
+            <label class="form-label">分支/标签（选填）</label>
+            <input
+              v-model="buildConfig.branch"
+              type="text"
+              class="form-control"
+              placeholder="不填则使用仓库默认分支"
+            />
+          </div>
+          <div class="form-text small text-muted mt-2">
+            <i class="fas fa-info-circle"></i>
+            临时 Git 不会保存到数据源，认证信息仅用于本次构建
           </div>
         </div>
 
@@ -284,6 +341,11 @@
         <!-- 文件上传模式提示 -->
         <div v-if="buildConfig.sourceType === 'file'" class="rounded-md border px-3 py-2 text-sm border-sky-200 bg-sky-50 text-sky-900 mb-3">
           <AppIcon  name="info-circle" /> 文件上传模式将使用模板库中的 Dockerfile 模板
+        </div>
+
+        <!-- 临时 Git 模式提示 -->
+        <div v-if="buildConfig.sourceType === 'temp_git'" class="alert alert-info mb-3">
+          <i class="fas fa-info-circle"></i> 临时 Git 模式将使用模板库中的 Dockerfile 模板
         </div>
 
         <!-- 模式1: 从项目中选择 Dockerfile（仅Git数据源） -->
@@ -496,7 +558,8 @@
           <div
             v-if="
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'"
+              isGitLikeSource
+            "
             class="mb-3"
           >
             <label class="block text-sm font-medium text-slate-700"
@@ -545,7 +608,8 @@
             v-if="
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'"
+              isGitLikeSource
+            "
             class="mb-3"
           >
             <div class="rounded-lg border border-blue-200 bg-white shadow-sm">
@@ -1055,12 +1119,13 @@
         <!-- 镜像配置（单应用模式或文件上传模式，排除单服务推送模式） -->
         <div
           v-if="
-            (services.length === 0 || forceSingleAppMode || buildConfig.sourceType === 'file') &&
+            (services.length === 0 || forceSingleAppMode || buildConfig.sourceType === 'file' || buildConfig.sourceType === 'temp_git') &&
             !(
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'
-            )"
+              isGitLikeSource
+            )
+          "
           class="grid grid-cols-1 gap-3 md:grid-cols-12 mb-3"
         >
           <div class="md:col-span-6">
@@ -1089,12 +1154,13 @@
         <!-- 推送选项（单应用模式或文件上传模式，排除单服务推送模式） -->
         <div
           v-if="
-            (services.length === 0 || forceSingleAppMode || buildConfig.sourceType === 'file') &&
+            (services.length === 0 || forceSingleAppMode || buildConfig.sourceType === 'file' || buildConfig.sourceType === 'temp_git') &&
             !(
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'
-            )"
+              isGitLikeSource
+            )
+          "
           class="mb-3"
         >
           <div class="flex items-center gap-2">
@@ -1307,9 +1373,11 @@
                   <div class="mb-2">
                     <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border border-sky-200 bg-sky-50 text-sky-700 mr-2">类型</span>
                     <strong>{{
-                      buildConfig.sourceType ==="file"
-                        ?"文件上传"
-                        :"Git 数据源"
+                      buildConfig.sourceType === "file"
+                        ? "文件上传"
+                        : buildConfig.sourceType === "temp_git"
+                        ? "临时 Git"
+                        : "Git 数据源"
                     }}</strong>
                   </div>
                   <div v-if="buildConfig.sourceType === 'file'" class="mb-2">
@@ -1330,6 +1398,16 @@
                         buildConfig.branch ||
                         branchesAndTags.default_branch ||"默认分支"
                       }}</code>
+                    </div>
+                  </div>
+                  <div v-if="buildConfig.sourceType === 'temp_git'">
+                    <div class="mb-2">
+                      <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border border-sky-200 bg-sky-50 text-sky-700 mr-2">仓库</span>
+                      <code class="text-sm">{{ buildConfig.tempGitUrl }}</code>
+                    </div>
+                    <div>
+                      <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border border-sky-200 bg-sky-50 text-sky-700 mr-2">分支</span>
+                      <code>{{ buildConfig.branch || "默认分支" }}</code>
                     </div>
                   </div>
                 </section>
@@ -1708,12 +1786,15 @@ const building = ref(false);
 
 // 构建配置
 const buildConfig = ref({
-  sourceType:"git", // 'file' 或 'git'
+  sourceType: "git", // 'file' | 'git' | 'temp_git'
   file: null,
-  sourceId:"",
-  branch:"",
-  projectType:"jar",
-  template:"",
+  sourceId: "",
+  tempGitUrl: "",
+  tempGitUsername: "",
+  tempGitPassword: "",
+  branch: "",
+  projectType: "jar",
+  template: "",
   useProjectDockerfile: true,
   dockerfileName:"Dockerfile",
   imageName:"myapp/demo",
@@ -1832,15 +1913,41 @@ const fileAccept = computed(() => {
   return".zip,.tar,.tar.gz,.tgz";
 });
 
+const isGitLikeSource = computed(() =>
+  ["git", "temp_git"].includes(buildConfig.value.sourceType)
+);
+
 const canProceedStep1 = computed(() => {
-  if (buildConfig.value.sourceType ==="file") {
+  if (buildConfig.value.sourceType === "file") {
     return buildConfig.value.file !== null;
-  } else {
-    // Git数据源需要选择数据源和分支
-    return buildConfig.value.sourceId !=="" && repoVerified.value && 
-           (buildConfig.value.branch || branchesAndTags.value.default_branch);
   }
+  if (buildConfig.value.sourceType === "temp_git") {
+    return buildConfig.value.tempGitUrl.trim() !== "";
+  }
+  // Git 数据源需要选择数据源和分支
+  return (
+    buildConfig.value.sourceId !== "" &&
+    repoVerified.value &&
+    (buildConfig.value.branch || branchesAndTags.value.default_branch)
+  );
 });
+
+function switchSourceType(type) {
+  buildConfig.value.sourceType = type;
+  if (type === "file") {
+    buildConfig.value.useProjectDockerfile = false;
+  } else if (type === "temp_git") {
+    buildConfig.value.sourceId = "";
+    buildConfig.value.useProjectDockerfile = false;
+    repoVerified.value = false;
+    selectedGitSourceDisplay.value = "";
+    gitSourceSearchQuery.value = "";
+  } else if (type === "git") {
+    buildConfig.value.tempGitUrl = "";
+    buildConfig.value.tempGitUsername = "";
+    buildConfig.value.tempGitPassword = "";
+  }
+}
 
 function buildImageRef(imageName, tag) {
   const image = (imageName ||"").trim();
@@ -1865,7 +1972,7 @@ function collectPushImageRefs() {
   const usesServiceCards =
     !forceSingleAppMode.value &&
     services.value.length > 0 &&
-    buildConfig.value.sourceType ==="git";
+    isGitLikeSource.value;
 
   if (
     usesServiceCards &&
@@ -2914,6 +3021,9 @@ function extractProjectNameFromFileName(fileName) {
 
 // 提取项目名（从 Git URL 或文件名）
 function extractProjectName() {
+  if (buildConfig.value.sourceType === 'temp_git' && buildConfig.value.tempGitUrl) {
+    return extractProjectNameFromGitUrl(buildConfig.value.tempGitUrl);
+  }
   if (buildConfig.value.sourceType === 'git' && buildConfig.value.sourceId) {
     const source = gitSources.value.find(
       (s) => s.source_id === buildConfig.value.sourceId
@@ -3211,19 +3321,26 @@ function validateBeforeBuild() {
   if (!teamStore.activeTeamIdForApi) {
     return"请先在顶部选择团队，再提交构建任务";
   }
-  if (buildConfig.value.sourceType ==="file") {
+  if (buildConfig.value.sourceType === "file") {
     if (!buildConfig.value.file) {
-      return"请先选择要上传的 JAR 或压缩包文件";
+      return "请先选择要上传的 JAR 或压缩包文件";
     }
     if (!buildConfig.value.template?.trim()) {
-      return"请在步骤 2 选择 Dockerfile 模板";
+      return "请在步骤 2 选择 Dockerfile 模板";
+    }
+  } else if (buildConfig.value.sourceType === "temp_git") {
+    if (!buildConfig.value.tempGitUrl?.trim()) {
+      return "请填写 Git 仓库地址";
+    }
+    if (!buildConfig.value.template?.trim()) {
+      return "请在步骤 2 选择 Dockerfile 模板";
     }
   } else {
     if (!buildConfig.value.sourceId) {
-      return"请选择 Git 数据源";
+      return "请选择 Git 数据源";
     }
     if (!buildConfig.value.useProjectDockerfile && !buildConfig.value.template?.trim()) {
-      return"请选择模板或改用项目 Dockerfile";
+      return "请选择模板或改用项目 Dockerfile";
     }
   }
   const image = (buildConfig.value.imageName ||"").trim();
@@ -3359,8 +3476,125 @@ async function startBuild() {
 
       // 上传完成，关闭进度对话框
       showUploadProgressModal.value = false;
+    } else if (buildConfig.value.sourceType === "temp_git") {
+      const buildSteps = {
+        step1: {
+          name: "选择数据源",
+          completed: true,
+          sourceType: buildConfig.value.sourceType,
+          gitUrl: buildConfig.value.tempGitUrl,
+        },
+        step2: {
+          name: "确认分支",
+          completed: true,
+          branch: buildConfig.value.branch || "默认分支",
+          skipped: false,
+        },
+        step3: {
+          name: "选择模板",
+          completed: true,
+          projectType: buildConfig.value.projectType,
+          template: buildConfig.value.template,
+          useProjectDockerfile: false,
+          dockerfileName: buildConfig.value.dockerfileName,
+        },
+        step4: {
+          name: "选择服务",
+          completed: true,
+          serviceCount: services.value.length,
+          selectedServices: selectedServices.value,
+          isMultiService: services.value.length > 0,
+        },
+        step5: {
+          name: "选择资源包",
+          completed: true,
+          resourcePackageCount: buildConfig.value.resourcePackages?.length || 0,
+        },
+        step6: {
+          name: "开始构建",
+          completed: false,
+          imageName: buildConfig.value.imageName,
+          tag: buildConfig.value.tag,
+          push: buildConfig.value.push,
+        },
+      };
+
+      const payload = {
+        project_type: buildConfig.value.projectType,
+        template: buildConfig.value.template,
+        git_url: buildConfig.value.tempGitUrl.trim(),
+        branch: buildConfig.value.branch || undefined,
+        imagename:
+          buildConfig.value.pushMode === "single" &&
+          buildConfig.value.selectedService
+            ? buildConfig.value.customImageName &&
+              buildConfig.value.customImageName.trim()
+              ? buildConfig.value.customImageName.trim()
+              : `${
+                  buildConfig.value.imagePrefix ||
+                  buildConfig.value.imageName ||
+                  "myapp/demo"
+                }/${buildConfig.value.selectedService}`
+            : buildConfig.value.imageName,
+        tag: buildConfig.value.tag || "latest",
+        push: buildConfig.value.push ? "on" : "off",
+        template_params:
+          Object.keys(buildConfig.value.templateParams).length > 0
+            ? JSON.stringify(buildConfig.value.templateParams)
+            : undefined,
+        service_template_params:
+          Object.keys(buildConfig.value.serviceTemplateParams).length > 0
+            ? JSON.stringify(buildConfig.value.serviceTemplateParams)
+            : undefined,
+        use_project_dockerfile: false,
+        dockerfile_name: buildConfig.value.dockerfileName || "Dockerfile",
+        temp_git_username: buildConfig.value.tempGitUsername || undefined,
+        temp_git_password: buildConfig.value.tempGitPassword || undefined,
+        selected_services:
+          buildConfig.value.pushMode === "single" &&
+          buildConfig.value.selectedService
+            ? [buildConfig.value.selectedService]
+            : selectedServices.value.length > 0
+            ? selectedServices.value
+            : undefined,
+        service_push_config:
+          selectedServices.value.length > 0
+            ? Object.fromEntries(
+                selectedServices.value.map((serviceName) => {
+                  const config = getServiceConfig(serviceName);
+                  normalizeServiceConfig(serviceName);
+                  const customName =
+                    config.customImageName && config.customImageName.trim();
+                  const imageName =
+                    customName || getServiceDefaultImageName(serviceName);
+                  return [
+                    serviceName,
+                    {
+                      push: config.push || false,
+                      imageName: imageName,
+                      tag:
+                        config.tag.trim() ||
+                        buildConfig.value.tag.trim() ||
+                        "latest",
+                      registry: config.registry || "",
+                    },
+                  ];
+                })
+              )
+            : undefined,
+        push_mode: buildConfig.value.pushMode || "multi",
+        build_steps: buildSteps,
+        resource_package_configs:
+          buildConfig.value.resourcePackages &&
+          buildConfig.value.resourcePackages.length > 0
+            ? buildConfig.value.resourcePackages
+            : undefined,
+      };
+
+      const res = await axios.post("/api/build-from-source", payload);
+      taskId = res.data.task_id;
     } else {
-      // Git 源码构建
+      // Git 数据源构建
       const source = gitSources.value.find(
         (s) => s.source_id === buildConfig.value.sourceId
       );
@@ -3582,10 +3816,11 @@ async function saveBuildConfigToTask(taskId) {
     buildSteps: {
       step1:"数据源选择完成",
       step2:
-        buildConfig.value.sourceType ==="git"
-          ?"分支确认完成"
-          :"跳过（文件上传）",
-      step3:"模板选择完成",
+        buildConfig.value.sourceType === "git" ||
+        buildConfig.value.sourceType === "temp_git"
+          ? "分支确认完成"
+          : "跳过（文件上传）",
+      step3: "模板选择完成",
       step4:
         forceSingleAppMode.value || services.value.length === 0
           ?"单应用模式"
