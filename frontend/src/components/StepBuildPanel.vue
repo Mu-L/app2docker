@@ -20,37 +20,49 @@
           <label class="block text-sm font-medium text-slate-700">
             数据源类型 <span class="text-red-500">*</span>
           </label>
-          <div class="button-group w-full" role="group">
-            <button
-              type="button"
-              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
-              :class="buildConfig.sourceType === 'file'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
-                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="switchSourceType('file')"
+          <div class="flex w-full gap-2" role="group">
+            <input
+              type="radio"
+              class="choice-input"
+              id="source-file"
+              v-model="buildConfig.sourceType"
+              value="file"
+              @change="switchSourceType('file')"
+            />
+            <label
+              for="source-file"
+              class="inline-flex flex-1 min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
             >
-              <AppIcon  name="file-upload" /> 上传文件
-            </button>
-            <button
-              type="button"
-              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
-              :class="buildConfig.sourceType === 'git'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
-                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="switchSourceType('git')"
+              <AppIcon name="file-upload" /> 上传文件
+            </label>
+            <input
+              type="radio"
+              class="choice-input"
+              id="source-git"
+              v-model="buildConfig.sourceType"
+              value="git"
+              @change="switchSourceType('git')"
+            />
+            <label
+              for="source-git"
+              class="inline-flex flex-1 min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
             >
-              <AppIcon  name="code-branch" /> Git 数据源
-            </button>
-            <button
-              type="button"
-              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
-              :class="buildConfig.sourceType === 'temp_git'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
-                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="switchSourceType('temp_git')"
+              <AppIcon name="code-branch" /> Git 数据源
+            </label>
+            <input
+              type="radio"
+              class="choice-input"
+              id="source-temp-git"
+              v-model="buildConfig.sourceType"
+              value="temp_git"
+              @change="switchSourceType('temp_git')"
+            />
+            <label
+              for="source-temp-git"
+              class="inline-flex flex-1 min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
             >
               <AppIcon name="link" /> 临时 Git
-            </button>
+            </label>
           </div>
         </div>
 
@@ -159,53 +171,19 @@
         </div>
 
         <!-- 临时 Git -->
-        <div v-if="buildConfig.sourceType === 'temp_git'">
+        <template v-if="buildConfig.sourceType === 'temp_git'">
           <div class="mb-3">
             <label class="block text-sm font-medium text-slate-700">
               Git 仓库地址 <span class="text-red-500">*</span>
             </label>
-            <input
+            <Input
               v-model="buildConfig.tempGitUrl"
-              type="text"
-              class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
               placeholder="https://github.com/user/repo.git"
               required
             />
-            <div class="text-xs text-slate-500 text-sm mt-1">
+            <div class="text-xs text-slate-500 text-sm">
               <AppIcon name="info-circle" />
               临时 Git 不会保存到数据源，认证信息仅用于本次构建
-            </div>
-          </div>
-
-          <div class="mb-3">
-            <label class="block text-sm font-medium text-slate-700 mb-2">
-              认证信息（选填）
-            </label>
-            <div class="rounded-md border border-slate-200 bg-slate-50 p-3">
-              <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div>
-                  <label class="block text-sm font-medium text-slate-700">用户名</label>
-                  <input
-                    v-model="buildConfig.tempGitUsername"
-                    type="text"
-                    class="flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
-                    placeholder="username 或 token"
-                  />
-                </div>
-                <div>
-                  <label class="block text-sm font-medium text-slate-700">密码/Token</label>
-                  <input
-                    v-model="buildConfig.tempGitPassword"
-                    type="password"
-                    class="flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
-                    placeholder="password 或 access token"
-                  />
-                </div>
-              </div>
-              <div class="text-xs text-slate-500 text-sm mt-2">
-                <AppIcon name="lock" />
-                私有仓库需要认证信息，可使用用户名密码或 Personal Access Token
-              </div>
             </div>
           </div>
 
@@ -213,10 +191,8 @@
             <label class="block text-sm font-medium text-slate-700">
               分支/标签（选填）
             </label>
-            <input
+            <Input
               v-model="buildConfig.branch"
-              type="text"
-              class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
               placeholder="不填则使用仓库默认分支"
             />
             <div class="text-xs text-slate-500 text-sm">
@@ -224,7 +200,34 @@
               可指定分支名或 tag，留空则检出仓库默认分支
             </div>
           </div>
-        </div>
+
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              认证信息（选填）
+            </label>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium text-slate-700">用户名</label>
+                <Input
+                  v-model="buildConfig.tempGitUsername"
+                  placeholder="username 或 token"
+                />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700">密码/Token</label>
+                <Input
+                  v-model="buildConfig.tempGitPassword"
+                  type="password"
+                  placeholder="password 或 access token"
+                />
+              </div>
+            </div>
+            <div class="text-xs text-slate-500 text-sm">
+              <AppIcon name="info-circle" />
+              私有仓库需要认证信息，可使用用户名密码或 Personal Access Token
+            </div>
+          </div>
+        </template>
 
         <!-- 分支选择（仅Git数据源） -->
         <div v-if="buildConfig.sourceType === 'git' && buildConfig.sourceId" class="mb-3">
@@ -1772,6 +1775,7 @@
 import { toastSuccess, toastError, toastInfo, toastApiError } from "@/utils/notify";
 
 import Button from "@/components/ui/button/Button.vue";
+import { Input } from "@/components/ui/input";
 import { registerTask } from "@/composables/useTaskCompletionWatcher";
 import { showToast } from "@/composables/useToast";
 import { useTeamStore } from "@/stores/team";
