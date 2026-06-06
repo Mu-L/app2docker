@@ -159,49 +159,70 @@
         </div>
 
         <!-- 临时 Git -->
-        <div v-if="buildConfig.sourceType === 'temp_git'" class="mb-3">
-          <label class="form-label">
-            Git 仓库地址 <span class="text-danger">*</span>
-          </label>
-          <input
-            v-model="buildConfig.tempGitUrl"
-            type="text"
-            class="form-control"
-            placeholder="https://github.com/user/repo.git"
-            required
-          />
-          <div class="row g-2 mt-2">
-            <div class="col-md-6">
-              <label class="form-label">用户名（选填）</label>
-              <input
-                v-model="buildConfig.tempGitUsername"
-                type="text"
-                class="form-control"
-                placeholder="私有仓库用户名"
-              />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">密码/Token（选填）</label>
-              <input
-                v-model="buildConfig.tempGitPassword"
-                type="password"
-                class="form-control"
-                placeholder="密码或 Access Token"
-              />
+        <div v-if="buildConfig.sourceType === 'temp_git'">
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              Git 仓库地址 <span class="text-red-500">*</span>
+            </label>
+            <input
+              v-model="buildConfig.tempGitUrl"
+              type="text"
+              class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+              placeholder="https://github.com/user/repo.git"
+              required
+            />
+            <div class="text-xs text-slate-500 text-sm mt-1">
+              <AppIcon name="info-circle" />
+              临时 Git 不会保存到数据源，认证信息仅用于本次构建
             </div>
           </div>
-          <div class="mt-2">
-            <label class="form-label">分支/标签（选填）</label>
+
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700 mb-2">
+              认证信息（选填）
+            </label>
+            <div class="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <label class="block text-sm font-medium text-slate-700">用户名</label>
+                  <input
+                    v-model="buildConfig.tempGitUsername"
+                    type="text"
+                    class="flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                    placeholder="username 或 token"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-slate-700">密码/Token</label>
+                  <input
+                    v-model="buildConfig.tempGitPassword"
+                    type="password"
+                    class="flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                    placeholder="password 或 access token"
+                  />
+                </div>
+              </div>
+              <div class="text-xs text-slate-500 text-sm mt-2">
+                <AppIcon name="lock" />
+                私有仓库需要认证信息，可使用用户名密码或 Personal Access Token
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              分支/标签（选填）
+            </label>
             <input
               v-model="buildConfig.branch"
               type="text"
-              class="form-control"
+              class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
               placeholder="不填则使用仓库默认分支"
             />
-          </div>
-          <div class="form-text small text-muted mt-2">
-            <i class="fas fa-info-circle"></i>
-            临时 Git 不会保存到数据源，认证信息仅用于本次构建
+            <div class="text-xs text-slate-500 text-sm">
+              <AppIcon name="info-circle" />
+              可指定分支名或 tag，留空则检出仓库默认分支
+            </div>
           </div>
         </div>
 
@@ -344,8 +365,8 @@
         </div>
 
         <!-- 临时 Git 模式提示 -->
-        <div v-if="buildConfig.sourceType === 'temp_git'" class="alert alert-info mb-3">
-          <i class="fas fa-info-circle"></i> 临时 Git 模式将使用模板库中的 Dockerfile 模板
+        <div v-if="buildConfig.sourceType === 'temp_git'" class="rounded-md border px-3 py-2 text-sm border-sky-200 bg-sky-50 text-sky-900 mb-3">
+          <AppIcon name="info-circle" /> 临时 Git 模式将使用模板库中的 Dockerfile 模板
         </div>
 
         <!-- 模式1: 从项目中选择 Dockerfile（仅Git数据源） -->
