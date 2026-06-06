@@ -1,5 +1,5 @@
 <template>
-  <div class="step-build-panel">
+  <div class="step-build-panel min-w-0">
 
     <StepsIndicator
       :steps="buildStepIndicators"
@@ -98,77 +98,92 @@
         </div>
 
         <!-- Git 数据源 -->
-        <div v-if="buildConfig.sourceType === 'git' && !showInlineNewSource" class="mb-3">
-          <label class="block text-sm font-medium text-slate-700">
-            Git 数据源 <span class="text-red-500">*</span>
-          </label>
-          <div class="relative">
-            <div class="field-group w-full">
-              <input
-                v-model="gitSourceSearchQuery"
-                type="text"
-                class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
-                placeholder="搜索数据源..."
-                @input="searchGitSources($event.target.value)"
-                @focus="gitSourceDropdownOpen = true"
-                @blur="handleGitSourceBlur"
-                required
-              />
-              <span v-if="gitSourceSearchLoading" class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">
-                <AppIcon  name="spinner" spin />
-              </span>
-            </div>
-            <div
-              v-if="gitSourceDropdownOpen"
-              class="absolute z-50 mt-1 min-w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg show w-full"
-              style="max-height: 300px; overflow-y: auto;"
+        <div v-if="buildConfig.sourceType === 'git' && !showInlineNewSource" class="mb-3 min-w-0">
+          <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-stretch">
+            <button
+              type="button"
+              class="flex min-h-11 w-full flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-blue-300 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 transition-colors hover:border-blue-400 hover:bg-blue-100 sm:max-w-xs"
+              @click="openInlineNewSource"
             >
-              <template v-if="gitSourceSearchResults.length > 0">
-                <a
-                  v-for="source in gitSourceSearchResults"
-                  :key="source.source_id"
-                  href="#"
-                  class="flex w-full min-w-0 items-start gap-2 rounded-sm px-2 py-2 text-sm text-slate-700 hover:bg-slate-100"
-                  @mousedown.prevent="selectGitSource(source)"
+              <span class="inline-flex items-center gap-2 text-base">
+                <AppIcon name="plus" />
+                新建数据源
+              </span>
+              <span class="text-xs font-normal text-blue-600/80">填写仓库地址并验证保存</span>
+            </button>
+            <div class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white p-3">
+              <label class="mb-2 block text-sm font-medium text-slate-700">
+                选择已有数据源 <span class="text-red-500">*</span>
+              </label>
+              <div class="relative">
+                <div class="field-group w-full">
+                  <input
+                    v-model="gitSourceSearchQuery"
+                    type="text"
+                    class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    placeholder="搜索名称或仓库地址..."
+                    @input="searchGitSources($event.target.value)"
+                    @focus="gitSourceDropdownOpen = true"
+                    @blur="handleGitSourceBlur"
+                    required
+                  />
+                  <span
+                    v-if="gitSourceSearchLoading"
+                    class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500"
+                  >
+                    <AppIcon name="spinner" spin />
+                  </span>
+                </div>
+                <div
+                  v-if="gitSourceDropdownOpen"
+                  class="absolute z-50 mt-1 min-w-40 w-full rounded-md border border-slate-200 bg-white p-1 shadow-lg show"
+                  style="max-height: 300px; overflow-y: auto;"
                 >
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <strong class="break-words">{{ source.name }}</strong>
-                      <Badge :variant="source.scope === 'team' ? 'info' : 'default'" class="shrink-0">
-                        {{ source.scope === 'team' ? '团队' : '个人' }}
-                      </Badge>
-                      <Badge
-                        v-if="source.scope === 'team'"
-                        :variant="source.visibility === 'team_public' ? 'success' : 'warning'"
-                        class="shrink-0"
-                      >
-                        {{ source.visibility === 'team_public' ? '团内公开' : '授权可见' }}
-                      </Badge>
-                    </div>
-                    <small class="block break-all text-slate-500">{{ formatGitUrl(source.git_url) }}</small>
-                    <small
-                      v-if="source.created_by_name"
-                      class="block text-xs text-slate-400"
+                  <template v-if="gitSourceSearchResults.length > 0">
+                    <a
+                      v-for="source in gitSourceSearchResults"
+                      :key="source.source_id"
+                      href="#"
+                      class="flex w-full min-w-0 items-start gap-2 rounded-sm px-2 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                      @mousedown.prevent="selectGitSource(source)"
                     >
-                      {{ source.created_by_name }}
-                    </small>
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <strong class="break-words">{{ source.name }}</strong>
+                          <Badge :variant="source.scope === 'team' ? 'info' : 'default'" class="shrink-0">
+                            {{ source.scope === 'team' ? '团队' : '个人' }}
+                          </Badge>
+                          <Badge
+                            v-if="source.scope === 'team'"
+                            :variant="source.visibility === 'team_public' ? 'success' : 'warning'"
+                            class="shrink-0"
+                          >
+                            {{ source.visibility === 'team_public' ? '团内公开' : '授权可见' }}
+                          </Badge>
+                        </div>
+                        <small class="block break-all text-slate-500">{{ formatGitUrl(source.git_url) }}</small>
+                        <small
+                          v-if="source.created_by_name"
+                          class="block text-xs text-slate-400"
+                        >
+                          {{ source.created_by_name }}
+                        </small>
+                      </div>
+                    </a>
+                  </template>
+                  <div
+                    v-else-if="!gitSourceSearchLoading && gitSourceSearchQuery"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-500"
+                  >
+                    无匹配结果，可点击左侧「新建数据源」
                   </div>
-                </a>
-              </template>
-              <div
-                v-else-if="!gitSourceSearchLoading && gitSourceSearchQuery"
-                class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-500"
-              >
-                无匹配结果
-              </div>
-              <div class="border-t border-slate-200 mt-1 pt-1">
-                <a
-                  href="#"
-                  class="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm font-medium text-blue-600 hover:bg-slate-100"
-                  @mousedown.prevent="openInlineNewSource"
-                >
-                  <AppIcon name="plus" /> 新建数据源
-                </a>
+                  <div
+                    v-else-if="!gitSourceSearchLoading"
+                    class="px-2 py-1.5 text-sm text-slate-500"
+                  >
+                    输入关键词搜索，或点击左侧「新建数据源」
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -176,34 +191,32 @@
             v-if="buildConfig.sourceId && repoVerified && !showInlineNewSource"
             class="rounded-md border px-3 py-2 text-sm border-green-200 bg-green-50 text-green-800 px-2 py-1 text-xs mt-2 mb-0"
           >
-            <AppIcon  name="check-circle" />
+            <AppIcon name="check-circle" />
             数据源已选择：{{ branchesAndTags.branches.length }} 个分支、{{
               branchesAndTags.tags.length
             }}
             个标签
-          </div>
-          <div class="text-xs text-slate-500 text-sm">
-            <AppIcon name="info-circle" />
-            搜索已有数据源，或在下拉列表底部点击「新建数据源」
           </div>
         </div>
 
         <!-- 内联新建数据源 -->
         <div
           v-if="buildConfig.sourceType === 'git' && showInlineNewSource"
-          class="mb-3 rounded-md border border-slate-200 bg-slate-50 p-3"
+          class="mb-3 rounded-lg border-2 border-blue-200 bg-blue-50/50 p-3 sm:p-4"
         >
           <div class="mb-3 flex items-center justify-between gap-2">
-            <h6 class="text-sm font-semibold text-slate-900">
+            <h6 class="text-base font-semibold text-slate-900">
               <AppIcon name="plus" class="text-blue-600" /> 新建数据源
             </h6>
-            <button
+            <Button
               type="button"
-              class="rounded-md p-1 text-slate-500 hover:bg-slate-200"
+              variant="outline"
+              size="sm"
+              class="min-h-11 shrink-0"
               @click="cancelInlineNewSource"
             >
-              <AppIcon name="times" />
-            </button>
+              返回选择已有
+            </Button>
           </div>
           <div class="mb-3">
             <label class="block text-sm font-medium text-slate-700">
