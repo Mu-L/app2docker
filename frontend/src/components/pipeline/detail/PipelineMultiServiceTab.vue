@@ -377,6 +377,9 @@
                             :placeholder="
                               multiServiceFormData.tag || 'latest'"
                           />
+                          <small class="text-slate-500">
+                            有分支标签映射时以映射为准；无映射时留空继承全局
+                          </small>
                         </div>
                         <div class="md:col-span-8 flex items-end">
                           <div class="flex items-center gap-2">

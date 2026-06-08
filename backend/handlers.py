@@ -4783,28 +4783,22 @@ def build_task_config(
     return {k: v for k, v in config.items() if v is not None}
 
 
-def _is_explicit_service_tag_override(service_tag: str, pipeline_tag: str) -> bool:
-    """Per-service tag is an override only when non-empty and differs from pipeline default."""
-    explicit = (service_tag or "").strip()
-    if not explicit:
-        return False
-    default_tag = (pipeline_tag or "latest").strip() or "latest"
-    return explicit != default_tag
-
-
 def resolve_multi_service_tag(
     service_config,
     pipeline_tag: str,
     mapped_tag: str = None,
     task_tag: str = None,
 ) -> str:
-    """Resolve image tag for a multi-service entry (override > branch mapping > task > pipeline)."""
+    """Resolve image tag for a multi-service entry (branch mapping > per-service > task > pipeline)."""
+    if mapped_tag and str(mapped_tag).strip():
+        return replace_tag_date_placeholders(str(mapped_tag).strip())
+
     if isinstance(service_config, dict):
         raw_tag = (service_config.get("tag") or "").strip()
-        if _is_explicit_service_tag_override(raw_tag, pipeline_tag):
+        if raw_tag:
             return replace_tag_date_placeholders(raw_tag)
 
-    for candidate in (mapped_tag, task_tag, pipeline_tag, "latest"):
+    for candidate in (task_tag, pipeline_tag, "latest"):
         if candidate and str(candidate).strip():
             return replace_tag_date_placeholders(str(candidate).strip())
     return "latest"

@@ -1,23 +1,15 @@
 """Multi-service tag override and branch mapping resolution tests."""
 
-from backend.handlers import (
-    pipeline_to_task_config,
-    resolve_multi_service_tag,
-    _is_explicit_service_tag_override,
-)
+from backend.handlers import pipeline_to_task_config, resolve_multi_service_tag
 
 
-def test_explicit_override_differs_from_pipeline_default():
-    assert _is_explicit_service_tag_override("dev", "latest") is True
-    assert _is_explicit_service_tag_override("", "latest") is False
-    assert _is_explicit_service_tag_override("latest", "latest") is False
-
-
-def test_resolve_multi_service_tag_priority():
+def test_resolve_multi_service_tag_mapping_always_wins():
     cfg = {"tag": "dev", "push": False}
     assert (
-        resolve_multi_service_tag(cfg, pipeline_tag="latest", mapped_tag="staging", task_tag="latest")
-        == "dev"
+        resolve_multi_service_tag(
+            cfg, pipeline_tag="latest", mapped_tag="staging", task_tag="latest"
+        )
+        == "staging"
     )
 
     cfg_empty = {"tag": "", "push": False}
@@ -28,16 +20,18 @@ def test_resolve_multi_service_tag_priority():
         == "dev"
     )
 
-    cfg_legacy_latest = {"tag": "latest", "push": False}
+
+def test_resolve_multi_service_tag_without_mapping_uses_service_tag():
+    cfg = {"tag": "v2.0", "push": False}
     assert (
         resolve_multi_service_tag(
-            cfg_legacy_latest, pipeline_tag="latest", mapped_tag="dev", task_tag="latest"
+            cfg, pipeline_tag="latest", mapped_tag=None, task_tag="latest"
         )
-        == "dev"
+        == "v2.0"
     )
 
 
-def test_pipeline_to_task_config_applies_branch_mapping_for_multi_service():
+def test_pipeline_to_task_config_mapping_overrides_per_service_tag():
     pipeline = {
         "git_url": "https://example.com/repo.git",
         "image_name": "myapp/demo",
@@ -50,7 +44,11 @@ def test_pipeline_to_task_config_applies_branch_mapping_for_multi_service():
         "selected_services": ["api", "worker"],
         "service_push_config": {
             "api": {"push": False, "imageName": "myapp/demo/api", "tag": "latest"},
-            "worker": {"push": False, "imageName": "myapp/demo/worker", "tag": "dev"},
+            "worker": {
+                "push": False,
+                "imageName": "myapp/demo/worker",
+                "tag": "v1.0",
+            },
         },
         "branch_tag_mapping": {"dev": "dev"},
     }
