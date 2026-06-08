@@ -1111,12 +1111,7 @@
                         <AppIcon  name="plus" /> 添加
                       </Button>
                     </div>
-                    <div
-                      v-if="
-                        formData.branch_tag_mapping &&
-                        formData.branch_tag_mapping.length > 0"
-                      class="pipeline-webhook-list-box"
-                    >
+                    <div class="pipeline-webhook-list-box">
                       <div
                         v-for="(mapping, index) in formData.branch_tag_mapping"
                         :key="mapping._rowId ?? index"
@@ -1132,15 +1127,16 @@
                           <AppIcon  name="arrow-right" />
                         </span>
                         <input
-                          :value="mapping.tag"
+                          v-model="mapping.tag"
                           type="text"
                           class="flex h-9 w-full rounded-md border border-slate-200 px-3 py-1 text-sm"
-                          placeholder="标签（如：latest 或 latest,v1.0.0）"
+                          placeholder="镜像标签（如：dev 或 v1.0.0）"
                           title="多个标签用半角逗号（,）分隔"
-                          @input="
+                          @blur="
                             mapping.tag = normalizeAsciiCommaSeparators(
-                              $event.target.value
-                            )"
+                              mapping.tag
+                            )
+                          "
                         />
                         <div class="pipeline-branch-mapping-row__action">
                           <Button
@@ -1153,9 +1149,14 @@
                           </Button>
                         </div>
                       </div>
-                    </div>
-                    <div v-else class="pipeline-webhook-empty">
-                      <AppIcon  name="info-circle" /> 暂无映射，点击「添加」创建
+                      <div
+                        v-if="
+                          !formData.branch_tag_mapping ||
+                          formData.branch_tag_mapping.length === 0"
+                        class="pipeline-webhook-empty"
+                      >
+                        <AppIcon  name="info-circle" /> 暂无映射，点击「添加」创建
+                      </div>
                     </div>
                   </section>
                 </div>

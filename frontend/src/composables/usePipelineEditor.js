@@ -717,7 +717,7 @@ function initCreateForm() {
   });
 }
 
-function applyPipelineToForm(pipeline) {
+function applyPipelineToForm(pipeline, options = {}) {
   // #region agent log (disabled - causes connection errors)
   // fetch("http://127.0.0.1:7242/ingest/eabdd98b-6281-463e-ab2f-b0646adc831e", {
   //   method:"POST",
@@ -741,9 +741,23 @@ function applyPipelineToForm(pipeline) {
   // }).catch(() => {});
   // #endregion
 
-  // 先重置Tab，确保显示基本信息Tab，而不是自动跳转到build Tab
-  activeTab.value ="basic";
-  // 然后设置编辑模式
+  const hasLocalBranchTagMapping =
+    Array.isArray(formData.value.branch_tag_mapping) &&
+    formData.value.branch_tag_mapping.some(
+      (row) =>
+        String(row?.branch ?? "").trim() || String(row?.tag ?? "").trim()
+    );
+  const shouldPreserveMappings =
+    options.preserveBranchTagMapping !== false &&
+    loadedPipelineId.value === pipeline.pipeline_id &&
+    hasLocalBranchTagMapping;
+  const savedBranchTagMapping = shouldPreserveMappings
+    ? formData.value.branch_tag_mapping.map((row) => ({ ...row }))
+    : null;
+
+  if (options.resetActiveTab !== false) {
+    activeTab.value ="basic";
+  }
   editingPipeline.value = pipeline;
 
   // 查找对应的数据源
@@ -785,9 +799,9 @@ function applyPipelineToForm(pipeline) {
       ? [...pipeline.webhook_allowed_branches]
       : [],
     tag_build_enabled: !!pipeline.tag_build_enabled,
-    branch_tag_mapping: mapPipelineBranchTagMappingToRows(
-      pipeline.branch_tag_mapping
-    ),
+    branch_tag_mapping:
+      savedBranchTagMapping ??
+      mapPipelineBranchTagMappingToRows(pipeline.branch_tag_mapping),
     post_build_webhooks: (() => {
       if (
         !pipeline.post_build_webhooks ||
@@ -898,10 +912,11 @@ function applyPipelineToForm(pipeline) {
 
 // 添加分支标签映射
 function addBranchTagMapping() {
-  if (!formData.value.branch_tag_mapping) {
-    formData.value.branch_tag_mapping = [];
-  }
-  formData.value.branch_tag_mapping.push(createBranchTagMappingRow());
+  const current = formData.value.branch_tag_mapping || [];
+  formData.value.branch_tag_mapping = [
+    ...current,
+    createBranchTagMappingRow(),
+  ];
 }
 
 // 删除分支标签映射
@@ -929,7 +944,8 @@ function removePostBuildWebhook(index) {
 }
 
 function removeBranchTagMapping(index) {
-  formData.value.branch_tag_mapping.splice(index, 1);
+  const current = formData.value.branch_tag_mapping || [];
+  formData.value.branch_tag_mapping = current.filter((_, i) => i !== index);
 }
 
 function uniqueBranchRules(rules) {
@@ -2766,7 +2782,10 @@ function generateUUID() {
         toastError("流水线不存在");
         return false;
       }
-      applyPipelineToForm(pipeline);
+      applyPipelineToForm(pipeline, {
+        resetActiveTab: false,
+        preserveBranchTagMapping: !force,
+      });
       loadedPipelineId.value = pipelineId;
       return true;
     } catch (error) {
