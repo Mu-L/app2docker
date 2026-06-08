@@ -72,6 +72,9 @@ function attachTeamId(config, teamId) {
   if (['post', 'put', 'patch'].includes(method)) {
     const data = config.data
     if (data instanceof FormData) {
+      if (!data.has('team_id')) {
+        data.append('team_id', teamId)
+      }
       if (!hasTeamInParams) {
         config.params = { ...existingParams, team_id: teamId }
       }

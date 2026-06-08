@@ -10498,17 +10498,19 @@ async def upload_resource_package(
     package_file: UploadFile = File(...),
     description: str = Form(""),
     extract: bool = Form(True),
-    team_id: Optional[str] = Form(None),
+    team_id: Optional[str] = Query(None, description="当前团队 ID"),
+    team_id_form: Optional[str] = Form(None, description="当前团队 ID（Form 字段，与 query 二选一）"),
 ):
     """上传资源包"""
     try:
         from backend.database import get_db_session
 
         username = require_auth(request)
+        effective_team_id = (team_id or team_id_form or "").strip() or None
         db = get_db_session()
         try:
             user_id = get_user_id_by_username(db, username)
-            scoped_team_id = resolve_team_scope_from_request(db, username, team_id)
+            scoped_team_id = resolve_team_scope_from_request(db, username, effective_team_id)
         finally:
             db.close()
 
