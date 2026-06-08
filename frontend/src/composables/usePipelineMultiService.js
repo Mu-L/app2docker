@@ -481,9 +481,7 @@ export function usePipelineMultiService({
             push: config?.push ?? false,
             imageName:
               customImageName || getMultiServiceDefaultImageName(serviceName),
-            tag:
-              config?.tag?.trim() ||
-              multiServiceFormData.value.tag ||"latest",
+            tag: (config?.tag && String(config.tag).trim()) || "",
           };
         });
         payload = {

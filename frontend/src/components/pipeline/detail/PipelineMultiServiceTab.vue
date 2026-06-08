@@ -362,12 +362,11 @@
                             <AppIcon  name="tags" class="text-amber-600" /> 标签
                           </label>
                           <input
-                            :value="
+                            v-model="
                               multiServiceFormData.service_push_config[
                                 serviceName
-                              ]?.tag || ''"
-                            @input="
-                              updateServiceTag(serviceName, $event.target.value)"
+                              ].tag
+                            "
                             type="text"
                             class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
                             :disabled="
@@ -378,6 +377,9 @@
                             :placeholder="
                               multiServiceFormData.tag || 'latest'"
                           />
+                          <small class="text-slate-500">
+                            有分支标签映射时以映射为准；无映射时留空继承全局
+                          </small>
                         </div>
                         <div class="md:col-span-8 flex items-end">
                           <div class="flex items-center gap-2">

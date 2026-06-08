@@ -30,7 +30,7 @@ from backend.config import (
 from backend.utils import generate_image_name, get_safe_filename
 from backend.auth import authenticate, verify_token, require_auth
 from backend.task_queue_manager import GlobalTaskQueueManager
-from backend.webhook_trigger import get_branch_mapping_value
+from backend.webhook_trigger import get_branch_mapping_value, normalize_tag_values
 
 # 目录配置
 UPLOAD_DIR = "data/uploads"
@@ -3483,7 +3483,11 @@ logs/
                             service_image_name = service_config.get(
                                 "imageName", f"{image_name}-{service_name}"
                             )
-                            service_tag_value = service_config.get("tag", tag)
+                            service_tag_value = resolve_multi_service_tag(
+                                service_config,
+                                pipeline_tag=tag,
+                                task_tag=tag,
+                            )
                             service_registry = service_config.get("registry", "")
                         else:
                             # 兼容旧格式：只有 push 布尔值
@@ -4779,6 +4783,27 @@ def build_task_config(
     return {k: v for k, v in config.items() if v is not None}
 
 
+def resolve_multi_service_tag(
+    service_config,
+    pipeline_tag: str,
+    mapped_tag: str = None,
+    task_tag: str = None,
+) -> str:
+    """Resolve image tag for a multi-service entry (branch mapping > per-service > task > pipeline)."""
+    if mapped_tag and str(mapped_tag).strip():
+        return replace_tag_date_placeholders(str(mapped_tag).strip())
+
+    if isinstance(service_config, dict):
+        raw_tag = (service_config.get("tag") or "").strip()
+        if raw_tag:
+            return replace_tag_date_placeholders(raw_tag)
+
+    for candidate in (task_tag, pipeline_tag, "latest"):
+        if candidate and str(candidate).strip():
+            return replace_tag_date_placeholders(str(candidate).strip())
+    return "latest"
+
+
 def replace_tag_date_placeholders(tag: str) -> str:
     """
     替换标签中的动态日期占位符
@@ -4883,11 +4908,12 @@ def pipeline_to_task_config(
     # 替换标签中的动态日期占位符
     final_tag = replace_tag_date_placeholders(final_tag)
 
-    # 处理分支标签映射（webhook和manual触发时都应用）
-    # 注意：即使传入了tag参数，我们仍然需要检查分支标签映射，确保多服务模式下的标签正确更新
-    if trigger_source in ["webhook", "manual"] and git_ref_type != "tag":
+    mapped_tag_from_branch = None
+
+    # 处理分支标签映射（webhook / manual / cron 触发时应用）
+    if trigger_source in ["webhook", "manual", "cron"] and git_ref_type != "tag":
         mapping = branch_tag_mapping or pipeline.get("branch_tag_mapping", {})
-        # webhook触发时，优先使用webhook推送的分支；手动触发时，使用实际使用的分支
+        # webhook触发时，优先使用webhook推送的分支；手动/cron 触发时使用实际分支
         branch_for_mapping = (
             webhook_branch
             if (trigger_source == "webhook" and webhook_branch)
@@ -4902,37 +4928,23 @@ def pipeline_to_task_config(
             mapped_tag_value = get_branch_mapping_value(branch_for_mapping, mapping)
 
             if mapped_tag_value:
-                # 处理标签值（支持字符串、数组或逗号分隔的字符串）
-                # 如果传入了tag参数，且该tag在映射值中，使用传入的tag；否则使用映射值的第一个
-                tag_list = []
-                if isinstance(mapped_tag_value, list):
-                    tag_list = mapped_tag_value
-                elif isinstance(mapped_tag_value, str):
-                    normalized = mapped_tag_value.replace("，", ",")
-                    if "," in normalized:
-                        # 逗号分隔的多个标签
-                        tag_list = [
-                            t.strip() for t in normalized.split(",") if t.strip()
-                        ]
-                    else:
-                        # 单个标签
-                        tag_list = [normalized]
+                tag_list = normalize_tag_values(mapped_tag_value)
 
                 # 如果传入了tag参数，且该tag在映射值列表中，使用传入的tag
-                # 这样可以支持多个标签的场景（如test分支映射到dev,test两个标签）
                 if tag and tag in tag_list:
                     final_tag = tag
+                    mapped_tag_from_branch = tag
                     print(f"   - 使用传入的tag参数: {tag} (在映射值中)")
                 elif tag_list:
-                    # 否则使用映射值的第一个标签
                     final_tag = tag_list[0]
+                    mapped_tag_from_branch = tag_list[0]
                     print(f"   - 使用映射值的第一个标签: {tag_list[0]}")
-                else:
-                    # 映射值为空，保持当前final_tag
-                    pass
 
-            # 替换映射标签中的动态日期占位符
             final_tag = replace_tag_date_placeholders(final_tag)
+            if mapped_tag_from_branch:
+                mapped_tag_from_branch = replace_tag_date_placeholders(
+                    mapped_tag_from_branch
+                )
             print(f"   - 映射后的final_tag: {final_tag}")
 
     # 调试日志：确认传递给 build_task_config 的分支
@@ -4944,54 +4956,33 @@ def pipeline_to_task_config(
     service_push_config = pipeline.get("service_push_config", {})
     selected_services = pipeline.get("selected_services", [])
 
-    # 在多服务模式下，如果标签已被映射更新，需要同步到 service_push_config 中每个服务的 tag
-    if push_mode == "multi" and trigger_source in ["webhook", "manual"]:
-        # 使用流水线的原始标签作为基准，用于判断是否需要更新服务标签
-        # 如果final_tag与原始标签不同，说明标签已被映射更新，需要同步到多服务配置
-        if final_tag != pipeline_original_tag:
-            # 标签已被映射更新，需要同步到多服务配置中
-            if selected_services and service_push_config:
-                # 深拷贝 service_push_config，避免修改原始 pipeline 数据
-                import copy
+    # 多服务模式：为每个服务解析最终标签（显式覆盖 > 分支映射 > 任务/流水线默认）
+    if push_mode == "multi" and selected_services:
+        import copy
 
-                service_push_config = copy.deepcopy(service_push_config)
+        service_push_config = copy.deepcopy(service_push_config or {})
+        for service_name in selected_services:
+            existing = service_push_config.get(service_name)
+            if isinstance(existing, dict):
+                service_config = existing.copy()
+            elif isinstance(existing, bool):
+                service_config = {
+                    "push": bool(existing),
+                    "imageName": "",
+                    "tag": "",
+                }
+            else:
+                service_config = {"push": False, "imageName": "", "tag": ""}
 
-                # 更新每个服务的 tag（强制使用映射后的标签，因为这是分支标签映射的结果）
-                # 注意：即使服务配置中已经有tag，也要更新为映射后的标签，因为这是分支标签映射的要求
-                for service_name in selected_services:
-                    if service_name in service_push_config:
-                        service_config = service_push_config[service_name]
-                        if isinstance(service_config, dict):
-                            # 深拷贝服务配置，避免修改原始对象
-                            service_config = service_config.copy()
-                            # 强制更新为映射后的标签（分支标签映射的优先级最高）
-                            service_config["tag"] = final_tag
-                            service_push_config[service_name] = service_config
-                            print(
-                                f"   - 更新服务 {service_name} 的标签为: {final_tag} (分支标签映射)"
-                            )
-                        else:
-                            # 兼容旧格式：只有 push 布尔值，转换为新格式
-                            service_push_config[service_name] = {
-                                "enabled": True,
-                                "push": bool(service_config),
-                                "imageName": "",
-                                "tag": final_tag,
-                            }
-                            print(
-                                f"   - 为服务 {service_name} 转换并设置标签为: {final_tag} (分支标签映射)"
-                            )
-                    else:
-                        # 如果服务没有配置，创建一个默认配置并使用映射后的标签
-                        service_push_config[service_name] = {
-                            "enabled": True,
-                            "push": False,
-                            "imageName": "",
-                            "tag": final_tag,
-                        }
-                        print(
-                            f"   - 为服务 {service_name} 创建配置，标签为: {final_tag} (分支标签映射)"
-                        )
+            resolved_tag = resolve_multi_service_tag(
+                service_config,
+                pipeline_tag=pipeline_original_tag,
+                mapped_tag=mapped_tag_from_branch,
+                task_tag=final_tag,
+            )
+            service_config["tag"] = resolved_tag
+            service_push_config[service_name] = service_config
+            print(f"   - 服务 {service_name} 最终标签: {resolved_tag}")
 
     should_push = False
     if push_mode == "single":
