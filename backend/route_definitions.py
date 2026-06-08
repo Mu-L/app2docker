@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 import asyncio
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from fastapi import (
     APIRouter,
     File,
@@ -64,7 +64,10 @@ from backend.config import (
 )
 from backend.utils import get_safe_filename
 from backend.webhook_trigger import (
+    build_webhook_dedupe_key,
+    get_webhook_event,
     get_branch_mapping_value,
+    is_build_webhook_event,
     matches_any_branch_rule,
     resolve_branch_tags,
     resolve_pipeline_webhook_branch,
@@ -287,6 +290,7 @@ class MigrationTaskCreateRequest(BaseModel):
     schedule_cron: str = ""
     schedule_enabled: bool = False
     execute_now: bool = False
+    team_id: Optional[str] = None
 
 
 class MigrationTaskUpdateRequest(BaseModel):
@@ -312,6 +316,166 @@ class MigrationToggleScheduleRequest(BaseModel):
 class MigrationTestSourceImageRequest(BaseModel):
     source_registry_name: str
     source_image: str
+
+
+class TeamApprovalCreateRequest(BaseModel):
+    request_type: str
+    payload: Dict[str, Any]
+    title: str = ""
+    team_id: Optional[str] = None
+
+
+class TeamApprovalReviewRequest(BaseModel):
+    review_note: str = ""
+
+
+def _migration_schedule_requested(
+    schedule_enabled: bool, schedule_cron: Optional[str]
+) -> bool:
+    return bool(schedule_enabled) or bool((schedule_cron or "").strip())
+
+
+def _migration_schedule_payload_sets_timer(payload: dict) -> bool:
+    return _migration_schedule_requested(
+        payload.get("schedule_enabled") is True,
+        payload.get("schedule_cron"),
+    )
+
+
+def _migration_schedule_payload_has_field(payload: dict) -> bool:
+    return "schedule_enabled" in payload or "schedule_cron" in payload
+
+
+def _registry_write_requires_approval(
+    registry_name: str,
+    team_id: str,
+    user_id: str,
+) -> bool:
+    from backend.migration_manager import registry_write_requires_approval
+
+    return registry_write_requires_approval(registry_name, team_id, user_id)
+
+
+def _create_migration_approval_request(
+    *,
+    team_id: str,
+    user_id: str,
+    task_name: str,
+    source_registry_name: str,
+    source_image: str,
+    target_registry_name: str,
+    target_image: str,
+    allow_overwrite: bool = False,
+    existing_task_id: Optional[str] = None,
+    schedule_cron: str = "",
+    schedule_enabled: bool = False,
+) -> dict:
+    from backend.team_approval_manager import TeamApprovalManager
+
+    manager = TeamApprovalManager()
+    request_id = manager.create_request(
+        team_id=team_id,
+        request_type="image_migration",
+        requested_by=user_id,
+        title=task_name or f"镜像迁移：{source_image} -> {target_image}",
+        payload={
+            "source_registry_name": source_registry_name,
+            "source_image": source_image,
+            "target_registry_name": target_registry_name,
+            "target_image": target_image,
+            "allow_overwrite": allow_overwrite,
+        },
+    )
+    approval_request = manager.get_request(request_id) or {"request_id": request_id}
+    _bind_image_approval_task(
+        approval_request,
+        user_id=user_id,
+        existing_task_id=existing_task_id,
+        schedule_cron=schedule_cron,
+        schedule_enabled=schedule_enabled,
+    )
+    return manager.get_request(request_id) or approval_request
+
+
+def _bind_image_approval_task(
+    approval_request: dict,
+    *,
+    user_id: str,
+    existing_task_id: Optional[str] = None,
+    schedule_cron: str = "",
+    schedule_enabled: bool = False,
+) -> Optional[str]:
+    from backend.migration_manager import MigrationTaskManager, build_registry_image_ref
+    from backend.team_approval_manager import TeamApprovalManager
+
+    request_id = approval_request.get("request_id")
+    payload = approval_request.get("payload") or {}
+    if not request_id:
+        return None
+    source_image = build_registry_image_ref(
+        payload["source_image"],
+        payload["source_registry_name"],
+        approval_request.get("team_id"),
+        user_id,
+    )
+    target_image = build_registry_image_ref(
+        payload["target_image"],
+        payload["target_registry_name"],
+        approval_request.get("team_id"),
+        user_id,
+    )
+    manager = MigrationTaskManager()
+    if existing_task_id:
+        manager.bind_approval_request(existing_task_id, request_id)
+        task_id = existing_task_id
+    else:
+        task_id = manager.create_task(
+            task_name=approval_request.get("title") or payload.get("source_image") or "",
+            source_image=source_image,
+            target_image=target_image,
+            source_registry_name=payload["source_registry_name"],
+            target_registry_name=payload["target_registry_name"],
+            schedule_cron=schedule_cron,
+            schedule_enabled=schedule_enabled,
+            team_id=approval_request.get("team_id"),
+            created_by=user_id,
+            approval_request_id=request_id,
+            execute_now=False,
+        )
+    TeamApprovalManager().set_request_result(
+        request_id,
+        {
+            "migration_task_id": task_id,
+            "source_image": source_image,
+            "target_image": target_image,
+            "requested_source_image": payload.get("source_image"),
+            "requested_target_image": payload.get("target_image"),
+        },
+    )
+    return task_id
+
+
+def _approval_required_response(approval_request: dict) -> JSONResponse:
+    task = None
+    task_id = (approval_request.get("result") or {}).get("migration_task_id")
+    if task_id:
+        try:
+            from backend.migration_manager import MigrationTaskManager
+
+            task = MigrationTaskManager().get_task(task_id)
+        except Exception:
+            task = None
+    return JSONResponse(
+        {
+            "success": True,
+            "approval_required": True,
+            "message": "写入认证镜像仓库需要团队审核，已提交团队申请",
+            "request": approval_request,
+            "request_id": approval_request.get("request_id"),
+            "task": task,
+            "task_id": task_id,
+        }
+    )
 
 
 @router.get("/public/version")
@@ -2885,6 +3049,7 @@ async def upload_file(
 
 @router.post("/verify-git-repo")
 async def verify_git_repo(
+    http_request: Request,
     git_url: str = Body(..., embed=True, description="Git 仓库地址"),
     save_as_source: bool = Body(False, embed=True, description="是否保存为数据源"),
     source_name: Optional[str] = Body(
@@ -2900,6 +3065,12 @@ async def verify_git_repo(
     ),
     branch: Optional[str] = Body(
         None, embed=True, description="指定分支（用于扫描该分支的 Dockerfile）"
+    ),
+    team_id: Optional[str] = Body(
+        None, embed=True, description="团队 ID（保存为数据源时必填）"
+    ),
+    scope: str = Body(
+        "personal", embed=True, description="数据源类型：personal | team"
     ),
 ):
     """验证 Git 仓库并获取分支和标签列表"""
@@ -3097,13 +3268,42 @@ async def verify_git_repo(
                 raise HTTPException(
                     status_code=400, detail="保存为数据源时必须提供数据源名称"
                 )
+            if not team_id:
+                raise HTTPException(
+                    status_code=400, detail="保存为数据源时必须提供 team_id"
+                )
 
             try:
+                auth_username = require_auth(http_request)
+                user_id = _resolve_user_id(http_request)
+                save_scope = (scope or "personal").strip().lower()
+                if save_scope not in ("personal", "team"):
+                    raise HTTPException(
+                        status_code=400, detail="scope 必须是 personal 或 team"
+                    )
+
+                from backend.database import get_db_session
+
+                db = get_db_session()
+                try:
+                    require_team_member(db, team_id, user_id)
+                    if save_scope == "team":
+                        require_team_admin(db, team_id, user_id)
+                finally:
+                    db.close()
+
                 source_manager = GitSourceManager()
-                # 检查是否已存在相同 URL 的数据源
-                existing_source = source_manager.get_source_by_url(git_url)
+                existing_source = None
+                if save_scope == "personal":
+                    existing_source = source_manager.get_personal_source_by_url(
+                        team_id, user_id, git_url
+                    )
+                else:
+                    existing_source = source_manager.get_source_by_scope_url(
+                        team_id, git_url, save_scope
+                    )
+
                 if existing_source:
-                    # 更新现有数据源（如果提供了认证信息，也更新）
                     source_manager.update_source(
                         source_id=existing_source["source_id"],
                         name=source_name,
@@ -3114,7 +3314,6 @@ async def verify_git_repo(
                         username=username if username is not None else None,
                         password=password if password is not None else None,
                     )
-                    # 更新扫描到的 Dockerfile
                     if result.get("dockerfiles"):
                         for dockerfile_path, content in result["dockerfiles"].items():
                             source_manager.update_dockerfile(
@@ -3124,8 +3323,7 @@ async def verify_git_repo(
                     result["source_saved"] = True
                     result["source_updated"] = True
                 else:
-                    # 创建新数据源
-                    source_id = source_manager.create_source(
+                    new_source_id = source_manager.create_source(
                         name=source_name,
                         git_url=git_url,
                         description=source_description or "",
@@ -3134,19 +3332,41 @@ async def verify_git_repo(
                         default_branch=result["default_branch"],
                         username=username,
                         password=password,
+                        team_id=team_id,
+                        created_by=user_id,
+                        scope=save_scope,
+                        visibility="private" if save_scope == "personal" else "private",
                     )
-                    # 保存扫描到的 Dockerfile
                     if result.get("dockerfiles"):
                         for dockerfile_path, content in result["dockerfiles"].items():
                             source_manager.update_dockerfile(
-                                source_id, dockerfile_path, content
+                                new_source_id, dockerfile_path, content
                             )
-                    result["source_id"] = source_id
+                    db = get_db_session()
+                    try:
+                        grant_creator_admin(db, "git_source", new_source_id, user_id)
+                    finally:
+                        db.close()
+                    result["source_id"] = new_source_id
                     result["source_saved"] = True
                     result["source_updated"] = False
+
+                OperationLogger.log(
+                    auth_username,
+                    "git_source_create"
+                    if not result.get("source_updated")
+                    else "git_source_update",
+                    {
+                        "source_id": result["source_id"],
+                        "name": source_name,
+                        "git_url": git_url,
+                        "scope": save_scope,
+                    },
+                )
+            except HTTPException:
+                raise
             except Exception as e:
                 print(f"⚠️ 保存数据源失败: {e}")
-                # 即使保存失败，也返回验证结果
                 result["source_saved"] = False
                 result["source_error"] = str(e)
 
@@ -3279,6 +3499,66 @@ async def parse_dockerfile_services_api(
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 
+def _resolve_api_git_source(
+    db,
+    user_id: str,
+    team_id: str,
+    git_url: str,
+    source_id: Optional[str] = None,
+    git_username: Optional[str] = None,
+    git_password: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    API 构建：Bearer Token / App Key 已定位用户，据此解析数据源与 Git 凭据。
+    - 未传 source_id 时，按「当前用户 + 团队 + git_url」匹配个人数据源
+    - 首次传入凭据时写入个人数据源，后续仅需 git_url
+    返回 (source_id, temp_username, temp_password)。
+    """
+    from backend.git_source_manager import GitSourceManager
+    from backend.resource_permissions import (
+        grant_creator_admin,
+        require_resource_permission,
+    )
+
+    manager = GitSourceManager()
+
+    if source_id:
+        require_resource_permission(db, user_id, "git_source", source_id, "run")
+        if git_username or git_password:
+            manager.update_source(
+                source_id=source_id,
+                username=git_username if git_username is not None else None,
+                password=git_password if git_password is not None else None,
+            )
+        return source_id, None, None
+
+    personal = manager.get_personal_source_by_url(team_id, user_id, git_url)
+    if personal:
+        sid = personal["source_id"]
+        require_resource_permission(db, user_id, "git_source", sid, "run")
+        if git_username or git_password:
+            manager.update_source(
+                source_id=sid,
+                username=git_username if git_username is not None else None,
+                password=git_password if git_password is not None else None,
+            )
+        return sid, None, None
+
+    if git_username or git_password:
+        sid, created = manager.upsert_personal_credentials(
+            team_id=team_id,
+            created_by=user_id,
+            git_url=git_url,
+            username=git_username,
+            password=git_password,
+        )
+        if created:
+            grant_creator_admin(db, "git_source", sid, user_id)
+        return sid, None, None
+
+    return None, None, None
+
+
 @router.post("/build-from-source")
 async def build_from_source(
     request: Request,
@@ -3323,6 +3603,12 @@ async def build_from_source(
         description="资源包配置列表 [{package_id, target_path}]，target_path 为相对路径，如 'test/b.txt' 或 'resources'",
     ),
     team_id: Optional[str] = Body(None, description="当前团队 ID"),
+    temp_git_username: Optional[str] = Body(
+        None, description="临时 Git 认证用户名（不持久化）"
+    ),
+    temp_git_password: Optional[str] = Body(
+        None, description="临时 Git 认证密码/Token（不持久化）"
+    ),
 ):
     """从 Git 源码构建镜像"""
     try:
@@ -3331,8 +3617,21 @@ async def build_from_source(
 
         db = get_db_session()
         try:
-            scoped_team_id = resolve_team_scope_from_request(db, username, team_id)
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
+                db, username, team_id
+            )
             user_id = get_user_id_by_username(db, username)
+            resolved_source_id, resolved_temp_user, resolved_temp_pass = (
+                _resolve_api_git_source(
+                    db,
+                    user_id,
+                    scoped_team_id,
+                    git_url,
+                    source_id=source_id,
+                    git_username=temp_git_username,
+                    git_password=temp_git_password,
+                )
+            )
         finally:
             db.close()
 
@@ -3407,7 +3706,7 @@ async def build_from_source(
                     sub_path=sub_path,
                     use_project_dockerfile=use_project_dockerfile,
                     dockerfile_name=dockerfile_name,
-                    source_id=source_id,
+                    source_id=resolved_source_id,
                     selected_services=selected_services,
                     service_push_config=service_push_config,
                     push_mode=push_mode or "multi",
@@ -3417,6 +3716,8 @@ async def build_from_source(
                     or [],  # 传递资源包配置
                     team_id=scoped_team_id,
                     created_by=user_id,
+                    temp_git_username=resolved_temp_user,
+                    temp_git_password=resolved_temp_pass,
                 )
                 if not task_id:
                     raise RuntimeError("任务创建失败：未返回 task_id")
@@ -3475,6 +3776,154 @@ async def build_from_source(
         error_trace = traceback.format_exc()
         print(f"❌ 构建请求处理失败: {e}")
         print(f"错误堆栈:\n{error_trace}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"构建失败: {str(e)}")
+
+
+class BuildWithConfigRequest(BaseModel):
+    """通过 .app2docker.yaml 配置触发构建"""
+
+    git_url: str
+    branch: Optional[str] = None
+    tag_name: Optional[str] = None
+    profile: Optional[str] = None
+    git_username: Optional[str] = None
+    git_password: Optional[str] = None
+    project_type: Optional[str] = None
+    template: Optional[str] = None
+    image_name: Optional[str] = None
+    tag: Optional[str] = None
+    push: Optional[bool] = None
+    team_id: Optional[str] = None
+
+
+@router.post("/build-with-config")
+async def build_with_config(http_request: Request, body: BuildWithConfigRequest):
+    """通过 Git 地址 + profile 触发构建（支持 .app2docker.yaml 配置文件）"""
+    try:
+        username = require_auth(http_request)
+        from backend.database import get_db_session
+        from backend.team_scope import resolve_team_scope_from_request
+
+        db = get_db_session()
+        try:
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
+                db, username, body.team_id
+            )
+            user_id = get_user_id_by_username(db, username)
+            resolved_source_id, resolved_temp_user, resolved_temp_pass = (
+                _resolve_api_git_source(
+                    db,
+                    user_id,
+                    scoped_team_id,
+                    body.git_url,
+                    git_username=body.git_username,
+                    git_password=body.git_password,
+                )
+            )
+        finally:
+            db.close()
+
+        from backend.app2docker_config import resolve_profile, peek_profile_config
+
+        branch = body.branch
+        tag_name = body.tag_name
+        resolved_profile = resolve_profile(
+            body.profile, branch=branch, tag_name=tag_name
+        )
+
+        git_config = get_git_config()
+        if resolved_source_id:
+            from backend.git_source_manager import GitSourceManager
+
+            source_auth = GitSourceManager().get_auth_config(resolved_source_id)
+            if source_auth.get("username"):
+                git_config["username"] = source_auth["username"]
+            if source_auth.get("password"):
+                git_config["password"] = source_auth["password"]
+        else:
+            if body.git_username:
+                git_config["username"] = body.git_username
+            if body.git_password:
+                git_config["password"] = body.git_password
+
+        config_source = None
+        if not branch and not tag_name:
+            peeked, config_source = peek_profile_config(
+                body.git_url,
+                profile=resolved_profile,
+                branch=None,
+                git_config=git_config,
+            )
+            if peeked:
+                git_branch = (peeked.get("git") or {}).get("branch")
+                if git_branch:
+                    branch = git_branch
+
+        config_overrides = {}
+        if body.project_type:
+            config_overrides["project_type"] = body.project_type
+        if body.template:
+            config_overrides["template"] = body.template
+        if body.image_name:
+            config_overrides["image_name"] = body.image_name
+        if body.tag:
+            config_overrides["tag"] = body.tag
+        if body.push is not None:
+            config_overrides["push"] = body.push
+
+        manager = BuildManager()
+        task_id = manager.start_build_from_source(
+            git_url=body.git_url,
+            image_name=body.image_name or "myapp/demo",
+            tag=body.tag or "latest",
+            should_push=body.push if body.push is not None else False,
+            selected_template=body.template or "",
+            project_type=body.project_type or "jar",
+            branch=branch,
+            source_id=resolved_source_id,
+            temp_git_username=resolved_temp_user,
+            temp_git_password=resolved_temp_pass,
+            profile=body.profile,
+            tag_name=tag_name,
+            config_overrides=config_overrides,
+            config_only_overrides=True,
+            trigger_source="api",
+            team_id=scoped_team_id,
+            created_by=user_id,
+        )
+
+        try:
+            OperationLogger.log(
+                username,
+                "build_with_config",
+                {
+                    "task_id": task_id,
+                    "git_url": body.git_url,
+                    "branch": branch,
+                    "tag_name": tag_name,
+                    "profile": resolved_profile,
+                },
+                team_id=scoped_team_id,
+            )
+        except Exception as log_error:
+            print(f"⚠️ 记录操作日志失败: {log_error}")
+
+        return JSONResponse(
+            {
+                "task_id": task_id,
+                "branch": branch,
+                "tag_name": tag_name,
+                "profile": resolved_profile,
+                "config_source": config_source,
+                "message": "构建任务已启动",
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"构建失败: {str(e)}")
 
@@ -5279,6 +5728,279 @@ async def delete_export_task(
 
 
 # === 镜像迁移 ===
+@router.post("/team-approval-requests")
+async def create_team_approval_request(
+    request: Request,
+    body: TeamApprovalCreateRequest,
+    team_id: Optional[str] = Query(None),
+):
+    """Create a generic team approval request."""
+    try:
+        from backend.database import get_db_session
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            scoped_team_id = resolve_team_scope_from_request_with_fallback(
+                db, username, team_id or body.team_id
+            )
+            user_id = get_user_id_by_username(db, username)
+            require_team_member(db, scoped_team_id, user_id)
+        finally:
+            db.close()
+
+        manager = TeamApprovalManager()
+        if body.request_type in ("image_tag", "image_migration"):
+            from backend.migration_manager import MigrationTaskManager, build_registry_image_ref
+            from backend.team_approval_manager import APPROVAL_HANDLERS
+
+            handler = APPROVAL_HANDLERS.get(body.request_type)
+            cleaned_payload = handler["validate_payload"](body.payload or {})
+            if not _registry_write_requires_approval(
+                cleaned_payload["target_registry_name"], scoped_team_id, user_id
+            ):
+                source_image = build_registry_image_ref(
+                    cleaned_payload["source_image"],
+                    cleaned_payload["source_registry_name"],
+                    scoped_team_id,
+                    user_id,
+                )
+                target_image = build_registry_image_ref(
+                    cleaned_payload["target_image"],
+                    cleaned_payload["target_registry_name"],
+                    scoped_team_id,
+                    user_id,
+                )
+                task_manager = MigrationTaskManager()
+                task_id = task_manager.create_task(
+                    task_name=body.title or handler["title"](cleaned_payload),
+                    source_image=source_image,
+                    target_image=target_image,
+                    source_registry_name=cleaned_payload["source_registry_name"],
+                    target_registry_name=cleaned_payload["target_registry_name"],
+                    team_id=scoped_team_id,
+                    created_by=user_id,
+                    execute_now=True,
+                )
+                return JSONResponse(
+                    {
+                        "success": True,
+                        "approval_required": False,
+                        "task_id": task_id,
+                        "task": task_manager.get_task(task_id),
+                    }
+                )
+        request_id = manager.create_request(
+            team_id=scoped_team_id,
+            request_type=body.request_type,
+            payload=body.payload,
+            requested_by=user_id,
+            title=body.title,
+        )
+        approval_request = manager.get_request(request_id)
+        if body.request_type in ("image_tag", "image_migration"):
+            _bind_image_approval_task(approval_request, user_id=user_id)
+            approval_request = manager.get_request(request_id)
+        OperationLogger.log(
+            username,
+            "create_team_approval_request",
+            {"request_id": request_id, "request_type": body.request_type},
+        )
+        task_id = (approval_request.get("result") or {}).get("migration_task_id")
+        task = None
+        if task_id:
+            from backend.migration_manager import MigrationTaskManager
+
+            task = MigrationTaskManager().get_task(task_id)
+        return JSONResponse(
+            {
+                "success": True,
+                "request_id": request_id,
+                "request": approval_request,
+                "task_id": task_id,
+                "task": task,
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建团队申请失败: {str(e)}")
+
+
+@router.get("/team-approval-requests")
+async def list_team_approval_requests(
+    request: Request,
+    team_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    request_type: Optional[str] = Query(None),
+):
+    """List team approval requests."""
+    try:
+        from backend.database import get_db_session
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            member = require_team_member(db, scoped_team_id, user_id)
+            requested_by = None if member.role in ("owner", "admin") else user_id
+        finally:
+            db.close()
+
+        requests = TeamApprovalManager().list_requests(
+            team_id=scoped_team_id,
+            status=status,
+            request_type=request_type,
+            requested_by=requested_by,
+        )
+        return JSONResponse({"requests": requests})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取团队申请失败: {str(e)}")
+
+
+@router.get("/team-approval-requests/{request_id}")
+async def get_team_approval_request(
+    request_id: str,
+    request: Request,
+    team_id: Optional[str] = Query(None),
+):
+    """Get one team approval request."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            member = require_team_member(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权访问该团队申请")
+            if member.role not in ("owner", "admin") and row.requested_by != user_id:
+                raise HTTPException(status_code=403, detail="无权访问该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().get_request(request_id)
+        return JSONResponse({"request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取团队申请详情失败: {str(e)}")
+
+
+@router.post("/team-approval-requests/{request_id}/approve")
+async def approve_team_approval_request(
+    request_id: str,
+    request: Request,
+    body: TeamApprovalReviewRequest = Body(default=TeamApprovalReviewRequest()),
+    team_id: Optional[str] = Query(None),
+):
+    """Approve a team request and run its handler."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_team_admin(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权审批该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().approve_request(
+            request_id,
+            reviewer_id=user_id,
+            review_note=body.review_note,
+        )
+        OperationLogger.log(
+            username,
+            "approve_team_approval_request",
+            {"request_id": request_id},
+        )
+        return JSONResponse({"success": True, "request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"同意团队申请失败: {str(e)}")
+
+
+@router.post("/team-approval-requests/{request_id}/reject")
+async def reject_team_approval_request(
+    request_id: str,
+    request: Request,
+    body: TeamApprovalReviewRequest = Body(default=TeamApprovalReviewRequest()),
+    team_id: Optional[str] = Query(None),
+):
+    """Reject a team request."""
+    try:
+        from backend.database import get_db_session
+        from backend.models import TeamApprovalRequest
+        from backend.team_approval_manager import TeamApprovalManager
+
+        username = require_auth(request)
+        db = get_db_session()
+        try:
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_team_admin(db, scoped_team_id, user_id)
+            row = (
+                db.query(TeamApprovalRequest)
+                .filter(TeamApprovalRequest.request_id == request_id)
+                .first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="申请不存在")
+            if row.team_id != scoped_team_id:
+                raise HTTPException(status_code=403, detail="无权审批该团队申请")
+        finally:
+            db.close()
+
+        item = TeamApprovalManager().reject_request(
+            request_id,
+            reviewer_id=user_id,
+            review_note=body.review_note,
+        )
+        OperationLogger.log(
+            username,
+            "reject_team_approval_request",
+            {"request_id": request_id},
+        )
+        return JSONResponse({"success": True, "request": item})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"驳回团队申请失败: {str(e)}")
+
+
 @router.get("/migration-tasks")
 async def list_migration_tasks(
     request: Request,
@@ -5294,10 +6016,15 @@ async def list_migration_tasks(
         db = get_db_session()
         try:
             scoped_team_id = resolve_team_scope_from_request(db, username, team_id)
+            user_id = get_user_id_by_username(db, username)
+            member = require_team_member(db, scoped_team_id, user_id)
+            created_by = None if member.role in ("owner", "admin") else user_id
         finally:
             db.close()
         manager = MigrationTaskManager()
-        tasks = manager.list_tasks(team_id=scoped_team_id, status=status)
+        tasks = manager.list_tasks(
+            team_id=scoped_team_id, status=status, created_by=created_by
+        )
         return JSONResponse({"tasks": tasks})
     except HTTPException:
         raise
@@ -5387,6 +6114,36 @@ async def create_migration_task(
                 db, username, team_id or body.team_id
             )
             user_id = get_user_id_by_username(db, username)
+            if _migration_schedule_requested(
+                body.schedule_enabled, body.schedule_cron
+            ):
+                require_team_admin(db, scoped_team_id, user_id)
+            target_needs_approval = _registry_write_requires_approval(
+                body.target_registry_name, scoped_team_id, user_id
+            )
+            if target_needs_approval and (
+                body.execute_now
+                or _migration_schedule_requested(
+                    body.schedule_enabled, body.schedule_cron
+                )
+            ):
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=body.task_name,
+                    source_registry_name=body.source_registry_name,
+                    source_image=body.source_image,
+                    target_registry_name=body.target_registry_name,
+                    target_image=body.target_image,
+                    schedule_cron=body.schedule_cron,
+                    schedule_enabled=body.schedule_enabled,
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id")},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 
@@ -5442,11 +6199,64 @@ async def update_migration_task(
         try:
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
-            require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            task = require_migration_task_in_team(
+                db, user_id, task_id, scoped_team_id
+            )
+            if getattr(task, "approval_request_id", None):
+                raise HTTPException(
+                    status_code=400,
+                    detail="该任务已绑定审批申请，不能编辑；如需变更请重新提交任务",
+                )
+            payload = body.model_dump(exclude_unset=True)
+            schedule_field_present = _migration_schedule_payload_has_field(payload)
+            existing_has_schedule = bool(task.schedule_enabled) or bool(
+                (task.schedule_cron or "").strip()
+            )
+            if schedule_field_present and (
+                existing_has_schedule
+                or _migration_schedule_payload_sets_timer(payload)
+            ):
+                require_team_admin(db, scoped_team_id, user_id)
+            effective_target_registry = payload.get(
+                "target_registry_name", task.target_registry_name
+            )
+            effective_schedule_enabled = payload.get(
+                "schedule_enabled", bool(task.schedule_enabled)
+            )
+            effective_schedule_cron = payload.get(
+                "schedule_cron", task.schedule_cron or ""
+            )
+            if (
+                _migration_schedule_requested(
+                    bool(effective_schedule_enabled), effective_schedule_cron
+                )
+                and _registry_write_requires_approval(
+                    effective_target_registry, scoped_team_id, user_id
+                )
+                and not getattr(task, "approval_request_id", None)
+            ):
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=payload.get("task_name", task.task_name or ""),
+                    source_registry_name=payload.get(
+                        "source_registry_name", task.source_registry_name
+                    ),
+                    source_image=payload.get("source_image", task.source_image),
+                    target_registry_name=effective_target_registry,
+                    target_image=payload.get("target_image", task.target_image),
+                    schedule_cron=effective_schedule_cron,
+                    schedule_enabled=bool(effective_schedule_enabled),
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id")},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 
-        payload = body.model_dump(exclude_unset=True)
         if not MigrationTaskManager().update_task(task_id, **payload):
             raise HTTPException(status_code=404, detail="任务不存在")
         OperationLogger.log(username, "update_migration_task", {"task_id": task_id})
@@ -5517,7 +6327,39 @@ async def execute_migration_task(
         try:
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
-            require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            task_row = require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            if _registry_write_requires_approval(
+                task_row.target_registry_name, scoped_team_id, user_id
+            ):
+                existing_approval = None
+                if getattr(task_row, "approval_request_id", None):
+                    from backend.team_approval_manager import TeamApprovalManager
+
+                    existing_approval = TeamApprovalManager().get_request(
+                        task_row.approval_request_id
+                    )
+                if existing_approval and existing_approval.get("status") in (
+                    "pending",
+                    "approved",
+                    "running",
+                ):
+                    return _approval_required_response(existing_approval)
+                approval_request = _create_migration_approval_request(
+                    team_id=scoped_team_id,
+                    user_id=user_id,
+                    task_name=task_row.task_name or "",
+                    source_registry_name=task_row.source_registry_name,
+                    source_image=task_row.source_image,
+                    target_registry_name=task_row.target_registry_name,
+                    target_image=task_row.target_image,
+                    existing_task_id=task_id,
+                )
+                OperationLogger.log(
+                    username,
+                    "create_migration_approval_request",
+                    {"request_id": approval_request.get("request_id"), "task_id": task_id},
+                )
+                return _approval_required_response(approval_request)
         finally:
             db.close()
 
@@ -5591,6 +6433,7 @@ async def toggle_migration_schedule(
             user_id = get_user_id_by_username(db, username)
             scoped_team_id = resolve_team_scope(db, user_id, team_id)
             require_migration_task_in_team(db, user_id, task_id, scoped_team_id)
+            require_team_admin(db, scoped_team_id, user_id)
         finally:
             db.close()
 
@@ -7979,6 +8822,23 @@ async def webhook_trigger(webhook_token: str, request: Request):
         except:
             payload = {}
 
+        webhook_event_meta = get_webhook_event(dict(request.headers))
+        webhook_event_name = webhook_event_meta.get("event", "")
+        webhook_platform = webhook_event_meta.get("platform", "unknown")
+        if not is_build_webhook_event(webhook_event_name):
+            print(
+                f"⚠️ 忽略非构建类 webhook 事件: platform={webhook_platform}, event={webhook_event_name}, pipeline={pipeline.get('name')}"
+            )
+            return JSONResponse(
+                {
+                    "message": "非 Push/Tag Push 事件，已忽略触发",
+                    "pipeline": pipeline.get("name"),
+                    "event": webhook_event_name,
+                    "platform": webhook_platform,
+                    "ignored": True,
+                }
+            )
+
         # 提取分支信息（不同平台格式不同）
         webhook_branch = None
         webhook_tag = None
@@ -8047,6 +8907,36 @@ async def webhook_trigger(webhook_token: str, request: Request):
             pipeline_id = pipeline["pipeline_id"]
             branch = webhook_tag
             tags = [webhook_tag]
+            webhook_dedupe = build_webhook_dedupe_key(
+                pipeline_id,
+                payload.get("ref") or f"refs/tags/{webhook_tag}",
+                payload,
+                dict(request.headers),
+            )
+            delivery_result = manager.reserve_webhook_delivery(
+                webhook_dedupe["dedupe_key"],
+                pipeline_id,
+                event=webhook_dedupe.get("event"),
+                platform=webhook_dedupe.get("platform"),
+                ref=webhook_dedupe.get("ref"),
+                commit_sha=webhook_dedupe.get("commit_sha"),
+                delivery_id=webhook_dedupe.get("delivery_id"),
+            )
+            if delivery_result.get("duplicate"):
+                print(
+                    f"🚫 重复 webhook 已忽略: pipeline={pipeline.get('name')}, ref={webhook_dedupe.get('ref')}, task_id={delivery_result.get('task_id')}"
+                )
+                return JSONResponse(
+                    {
+                        "message": "重复 Webhook 已忽略",
+                        "status": "duplicate",
+                        "pipeline": pipeline.get("name"),
+                        "task_id": delivery_result.get("task_id"),
+                        "tag": webhook_tag,
+                        "ref_type": "tag",
+                        "ref_name": webhook_tag,
+                    }
+                )
             task_config = pipeline_to_task_config(
                 pipeline,
                 trigger_source="webhook",
@@ -8073,6 +8963,9 @@ async def webhook_trigger(webhook_token: str, request: Request):
                 )
 
             task_id = build_manager._trigger_task_from_config(task_config)
+            manager.complete_webhook_delivery(
+                webhook_dedupe["dedupe_key"], task_id, status="created"
+            )
             task_snapshot = build_manager.task_manager.get_task(task_id)
             is_queued = task_snapshot.get("status") == "pending"
             queue_length = manager.get_queue_length(pipeline_id)
@@ -8268,6 +9161,36 @@ async def webhook_trigger(webhook_token: str, request: Request):
         # 获取标签列表（支持单个标签或多个标签）
         tags = resolve_branch_tags(branch_for_tag_mapping, branch_tag_mapping)
 
+        webhook_dedupe = build_webhook_dedupe_key(
+            pipeline["pipeline_id"],
+            payload.get("ref") or f"refs/heads/{branch}",
+            payload,
+            dict(request.headers),
+        )
+        delivery_result = manager.reserve_webhook_delivery(
+            webhook_dedupe["dedupe_key"],
+            pipeline["pipeline_id"],
+            event=webhook_dedupe.get("event"),
+            platform=webhook_dedupe.get("platform"),
+            ref=webhook_dedupe.get("ref"),
+            commit_sha=webhook_dedupe.get("commit_sha"),
+            delivery_id=webhook_dedupe.get("delivery_id"),
+        )
+        if delivery_result.get("duplicate"):
+            print(
+                f"🚫 重复 webhook 已忽略: pipeline={pipeline.get('name')}, ref={webhook_dedupe.get('ref')}, task_id={delivery_result.get('task_id')}"
+            )
+            return JSONResponse(
+                {
+                    "message": "重复 Webhook 已忽略",
+                    "status": "duplicate",
+                    "pipeline": pipeline.get("name"),
+                    "task_id": delivery_result.get("task_id"),
+                    "branch": branch,
+                    "tags": tags,
+                }
+            )
+
         # 为每个标签创建任务
         from backend.handlers import pipeline_to_task_config
 
@@ -8372,6 +9295,13 @@ async def webhook_trigger(webhook_token: str, request: Request):
                 )
         
         # 提取 webhook 相关信息
+        if all_task_ids:
+            manager.complete_webhook_delivery(
+                webhook_dedupe["dedupe_key"], all_task_ids[0], status="created"
+            )
+        else:
+            manager.release_webhook_delivery(webhook_dedupe["dedupe_key"])
+
         webhook_info = {
             "branch": branch,
             "tags": tags,  # 添加标签列表信息
@@ -8719,6 +9649,8 @@ class CreateGitSourceRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     dockerfiles: Optional[dict] = None  # Dockerfile 字典
+    scope: str = "personal"  # personal | team
+    visibility: str = "private"  # private | team_public
 
 
 class UpdateGitSourceRequest(BaseModel):
@@ -8731,6 +9663,8 @@ class UpdateGitSourceRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     dockerfiles: Optional[dict] = None  # Dockerfile 字典
+    scope: Optional[str] = None
+    visibility: Optional[str] = None
 
 
 @router.get("/git-sources")
@@ -8801,45 +9735,112 @@ async def create_git_source(request: CreateGitSourceRequest, http_request: Reque
         user_id = _resolve_user_id(http_request)
         from backend.database import get_db_session
 
+        scope = (request.scope or "personal").strip().lower()
+        visibility = (request.visibility or "private").strip().lower()
+        if scope not in ("personal", "team"):
+            raise HTTPException(status_code=400, detail="scope 必须是 personal 或 team")
+        if visibility not in ("private", "team_public"):
+            raise HTTPException(
+                status_code=400, detail="visibility 必须是 private 或 team_public"
+            )
+
         db = get_db_session()
         try:
             require_team_member(db, request.team_id, user_id)
+            if scope == "team":
+                require_team_admin(db, request.team_id, user_id)
+            else:
+                visibility = "private"
         finally:
             db.close()
+
         manager = GitSourceManager()
+        source_updated = False
 
-        source_id = manager.create_source(
-            name=request.name,
-            git_url=request.git_url,
-            description=request.description,
-            branches=request.branches,
-            tags=request.tags,
-            default_branch=request.default_branch,
-            username=request.username,
-            password=request.password,
-            dockerfiles=request.dockerfiles or {},
-            team_id=request.team_id,
-            created_by=user_id,
-        )
+        if scope == "personal":
+            existing = manager.get_personal_source_by_url(
+                request.team_id, user_id, request.git_url
+            )
+            if existing:
+                manager.update_source(
+                    source_id=existing["source_id"],
+                    name=request.name,
+                    description=request.description,
+                    branches=request.branches,
+                    tags=request.tags,
+                    default_branch=request.default_branch,
+                    username=request.username,
+                    password=request.password,
+                )
+                if request.dockerfiles:
+                    for dockerfile_path, content in request.dockerfiles.items():
+                        manager.update_dockerfile(
+                            existing["source_id"], dockerfile_path, content
+                        )
+                source_id = existing["source_id"]
+                source_updated = True
+            else:
+                source_id = manager.create_source(
+                    name=request.name,
+                    git_url=request.git_url,
+                    description=request.description,
+                    branches=request.branches,
+                    tags=request.tags,
+                    default_branch=request.default_branch,
+                    username=request.username,
+                    password=request.password,
+                    dockerfiles=request.dockerfiles or {},
+                    team_id=request.team_id,
+                    created_by=user_id,
+                    scope=scope,
+                    visibility=visibility,
+                )
+        else:
+            source_id = manager.create_source(
+                name=request.name,
+                git_url=request.git_url,
+                description=request.description,
+                branches=request.branches,
+                tags=request.tags,
+                default_branch=request.default_branch,
+                username=request.username,
+                password=request.password,
+                dockerfiles=request.dockerfiles or {},
+                team_id=request.team_id,
+                created_by=user_id,
+                scope=scope,
+                visibility=visibility,
+            )
 
-        db = get_db_session()
-        try:
-            grant_creator_admin(db, "git_source", source_id, user_id)
-        finally:
-            db.close()
+        if not source_updated:
+            db = get_db_session()
+            try:
+                grant_creator_admin(db, "git_source", source_id, user_id)
+            finally:
+                db.close()
 
         # 记录操作日志
         OperationLogger.log(
             username,
-            "git_source_create",
+            "git_source_create" if not source_updated else "git_source_update",
             {
                 "source_id": source_id,
                 "name": request.name,
                 "git_url": request.git_url,
+                "scope": scope,
+                "visibility": visibility,
             },
         )
 
-        return JSONResponse({"source_id": source_id, "message": "数据源创建成功"})
+        return JSONResponse(
+            {
+                "source_id": source_id,
+                "message": "数据源更新成功" if source_updated else "数据源创建成功",
+                "source_updated": source_updated,
+            }
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
 
@@ -8856,10 +9857,43 @@ async def update_git_source(
         username = require_auth(http_request)
         user_id = _resolve_user_id(http_request)
         from backend.database import get_db_session
+        from backend.models import GitSource
 
         db = get_db_session()
         try:
             require_resource_permission(db, user_id, "git_source", source_id, "edit")
+            row = (
+                db.query(GitSource).filter(GitSource.source_id == source_id).first()
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="数据源不存在")
+
+            scope_update = request.scope
+            visibility_update = request.visibility
+            if scope_update is not None or visibility_update is not None:
+                if not row.team_id:
+                    raise HTTPException(
+                        status_code=400, detail="无团队归属的数据源不可修改范围"
+                    )
+                require_team_admin(db, row.team_id, user_id)
+                if scope_update is not None:
+                    s = (scope_update or "personal").strip().lower()
+                    if s not in ("personal", "team"):
+                        raise HTTPException(
+                            status_code=400, detail="scope 必须是 personal 或 team"
+                        )
+                if visibility_update is not None:
+                    v = (visibility_update or "private").strip().lower()
+                    if v not in ("private", "team_public"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="visibility 必须是 private 或 team_public",
+                        )
+                effective_scope = (
+                    (scope_update or row.scope or "personal").strip().lower()
+                )
+                if effective_scope == "personal":
+                    visibility_update = "private"
         finally:
             db.close()
         manager = GitSourceManager()
@@ -8874,6 +9908,8 @@ async def update_git_source(
             default_branch=request.default_branch,
             username=request.username,
             password=request.password,
+            scope=request.scope,
+            visibility=request.visibility,
         )
 
         if not success:

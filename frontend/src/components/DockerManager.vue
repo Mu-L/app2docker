@@ -383,7 +383,7 @@
           }}
         </div>
 
-        <Table v-else min-width-class="min-w-[58rem]">
+        <Table v-else min-width-class="min-w-[48rem]">
           <TableHeader>
             <TableRow>
               <TableHead>容器名称</TableHead>
@@ -507,7 +507,7 @@
           {{ imageSearch || imageTagFilter ?"未找到匹配的镜像" :"暂无镜像" }}
         </div>
 
-        <Table v-else min-width-class="min-w-[58rem]">
+        <Table v-else min-width-class="min-w-[48rem]">
           <TableHeader>
             <TableRow>
               <TableHead>镜像名称</TableHead>

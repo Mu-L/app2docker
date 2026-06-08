@@ -133,7 +133,7 @@
       </div>
 
       <div class="hidden md:block">
-        <Table min-width-class="min-w-[64rem]">
+        <Table min-width-class="min-w-[48rem]">
           <TableHeader>
         <TableRow>
           <TableHead class="w-[8%]">配置ID</TableHead>

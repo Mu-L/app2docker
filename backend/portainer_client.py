@@ -646,42 +646,40 @@ class PortainerClient:
         return image_refs
 
     @classmethod
-    def inject_deploy_revision(
-        cls, compose_content: str, revision: Optional[str]
+    def strip_deploy_revision(
+        cls, compose_content: str
     ) -> Tuple[str, bool, int]:
-        """Add a deploy label to services using non-digest image references."""
-        if not revision:
-            return compose_content, False, 0
+        """Remove legacy app2docker deploy revision labels from compose content."""
         try:
             compose = yaml.safe_load(compose_content) or {}
         except Exception as exc:
-            logger.warning("Failed to parse compose content for revision injection: %s", exc)
+            logger.warning("Failed to parse compose content for revision cleanup: %s", exc)
             return compose_content, False, 0
 
         services = compose.get("services") if isinstance(compose, dict) else None
         if not isinstance(services, dict):
             return compose_content, False, 0
 
-        injected = False
+        removed = False
         service_count = 0
         label_key = "app2docker.deploy.revision"
-        label_value = str(revision)
         for service in services.values():
             if not isinstance(service, dict):
                 continue
-            if not cls._image_uses_mutable_tag(service.get("image")):
-                continue
-            deploy = service.setdefault("deploy", {})
-            if not isinstance(deploy, dict):
-                deploy = {}
-                service["deploy"] = deploy
-            cls._set_compose_label_mapping(deploy, "labels", label_key, label_value)
-            # Swarm 用 deploy.labels；standalone Compose 用 service.labels
-            cls._set_compose_label_mapping(service, "labels", label_key, label_value)
-            injected = True
-            service_count += 1
+            service_removed = False
+            deploy = service.get("deploy")
+            if isinstance(deploy, dict):
+                service_removed = cls._remove_compose_label_mapping(
+                    deploy, "labels", label_key
+                ) or service_removed
+            service_removed = cls._remove_compose_label_mapping(
+                service, "labels", label_key
+            ) or service_removed
+            if service_removed:
+                removed = True
+                service_count += 1
 
-        if not injected:
+        if not removed:
             return compose_content, False, 0
         return yaml.safe_dump(compose, allow_unicode=True, sort_keys=False), True, service_count
 
@@ -812,8 +810,8 @@ class PortainerClient:
             部署结果
         """
         try:
-            compose_content, revision_injected, revision_service_count = (
-                self.inject_deploy_revision(compose_content, revision)
+            compose_content, revision_removed, revision_service_count = (
+                self.strip_deploy_revision(compose_content)
             )
             existing_stack = self.get_stack_by_name(name)
             if existing_stack:
@@ -826,7 +824,8 @@ class PortainerClient:
                 )
                 result.update(
                     {
-                        "revision_injected": revision_injected,
+                        "revision_injected": False,
+                        "revision_removed": revision_removed,
                         "revision_service_count": revision_service_count,
                     }
                 )
@@ -883,7 +882,8 @@ class PortainerClient:
                     "stack_name": name,
                     "compose_changed": True,
                     "pull_image": None,
-                    "revision_injected": revision_injected,
+                    "revision_injected": False,
+                    "revision_removed": revision_removed,
                     "revision_service_count": revision_service_count,
                 }
         
@@ -909,6 +909,33 @@ class PortainerClient:
             labels.append(f"{prefix}{label_value}")
         else:
             target[field] = {label_key: label_value}
+
+    @staticmethod
+    def _remove_compose_label_mapping(
+        target: Dict[str, Any], field: str, label_key: str
+    ) -> bool:
+        labels = target.get(field)
+        if labels is None:
+            return False
+        if isinstance(labels, dict):
+            if label_key in labels:
+                labels.pop(label_key, None)
+                if not labels:
+                    target.pop(field, None)
+                return True
+            return False
+        if isinstance(labels, list):
+            prefix = f"{label_key}="
+            next_labels = [
+                item for item in labels if not str(item).startswith(prefix)
+            ]
+            if len(next_labels) != len(labels):
+                if next_labels:
+                    target[field] = next_labels
+                else:
+                    target.pop(field, None)
+                return True
+        return False
 
     @staticmethod
     def _compose_project_name_candidates(stack_name: str) -> List[str]:

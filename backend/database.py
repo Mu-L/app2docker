@@ -183,6 +183,8 @@ def _run_init_db_migrations():
 
     # 迁移：镜像迁移任务表与菜单权限
     migrate_add_migration_tasks_table()
+    migrate_add_team_approval_requests_table()
+    migrate_add_git_source_scope()
 
     print(f"✅ 数据库初始化完成: {DB_FILE}")
 
@@ -1654,6 +1656,38 @@ def _add_column_if_missing(cursor, table: str, column: str, ddl: str):
         print(f"✅ {table}.{column} 已存在")
 
 
+def migrate_add_git_source_scope():
+    """迁移：git_sources 表添加 scope / visibility 字段"""
+    if not os.path.exists(DB_FILE):
+        return
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='git_sources'"
+        )
+        if cursor.fetchone():
+            _add_column_if_missing(
+                cursor, "git_sources", "scope", "scope VARCHAR(20) DEFAULT 'personal'"
+            )
+            _add_column_if_missing(
+                cursor,
+                "git_sources",
+                "visibility",
+                "visibility VARCHAR(20) DEFAULT 'private'",
+            )
+            cursor.execute(
+                "UPDATE git_sources SET scope = 'personal' WHERE scope IS NULL OR scope = ''"
+            )
+            cursor.execute(
+                "UPDATE git_sources SET visibility = 'private' WHERE visibility IS NULL OR visibility = ''"
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ git_sources scope/visibility 迁移失败: {e}")
+
+
 def migrate_add_team_task_cleanup_days():
     """迁移：为 teams 表添加 task_cleanup_days 字段"""
     if not os.path.exists(DB_FILE):
@@ -2258,6 +2292,10 @@ def migrate_add_migration_tasks_table():
                 cursor.execute(
                     "ALTER TABLE migration_tasks ADD COLUMN target_registry_name VARCHAR(255) DEFAULT ''"
                 )
+            if "approval_request_id" not in cols:
+                cursor.execute(
+                    "ALTER TABLE migration_tasks ADD COLUMN approval_request_id VARCHAR(36)"
+                )
             conn.commit()
         finally:
             conn.close()
@@ -2303,6 +2341,69 @@ def migrate_add_migration_tasks_table():
     except Exception as e:
         db.rollback()
         print(f"⚠️ 镜像迁移权限迁移失败: {e}")
+    finally:
+        db.close()
+
+
+def migrate_add_team_approval_requests_table():
+    """Create generic team approval requests table and menu permission."""
+    if not os.path.exists(DB_FILE):
+        return
+
+    try:
+        from backend.models import (
+            Base,
+            Permission,
+            Role,
+            RolePermission,
+            TeamApprovalRequest,
+        )
+
+        Base.metadata.create_all(bind=engine, tables=[TeamApprovalRequest.__table__])
+    except Exception as e:
+        print(f"⚠️ 创建 team_approval_requests 表失败: {e}")
+        return
+
+    db = SessionLocal()
+    try:
+        perm = (
+            db.query(Permission)
+            .filter(Permission.code == "menu.team-requests")
+            .first()
+        )
+        if not perm:
+            perm = Permission(
+                permission_id=str(uuid.uuid4()),
+                code="menu.team-requests",
+                name="团队申请",
+                category="menu",
+            )
+            db.add(perm)
+            db.commit()
+
+        for role_name in ("admin", "user"):
+            role = db.query(Role).filter(Role.name == role_name).first()
+            if not role:
+                continue
+            existing = (
+                db.query(RolePermission)
+                .filter(
+                    RolePermission.role_id == role.role_id,
+                    RolePermission.permission_id == perm.permission_id,
+                )
+                .first()
+            )
+            if not existing:
+                db.add(
+                    RolePermission(
+                        role_id=role.role_id,
+                        permission_id=perm.permission_id,
+                    )
+                )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"⚠️ 团队申请权限迁移失败: {e}")
     finally:
         db.close()
 

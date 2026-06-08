@@ -51,6 +51,9 @@ from backend.docker_builder import create_docker_builder
 docker_builder = None
 DOCKER_AVAILABLE = False
 
+# 临时 Git 密码仅驻留内存，供排队任务启动时使用（不写入 task_config）
+_TEMP_GIT_PASSWORD_CACHE: dict = {}
+
 
 def init_docker_builder():
     """初始化 Docker 构建器"""
@@ -2498,6 +2501,12 @@ class BuildManager:
             created_by=task_config.get("created_by"),
             git_ref_type=git_ref_type,
             git_ref_name=git_ref_name,
+            temp_git_username=task_config.get("temp_git_username"),
+            temp_git_password=task_config.get("temp_git_password"),
+            profile=task_config.get("profile"),
+            tag_name=task_config.get("tag_name"),
+            config_overrides=task_config.get("config_overrides") or {},
+            config_only_overrides=task_config.get("config_only_overrides", False),
         )
 
     def _start_build_from_source_thread(self, task_id: str, task_config: dict):
@@ -2524,6 +2533,14 @@ class BuildManager:
         service_template_params = task_config.get("service_template_params", {})
         push_mode = task_config.get("push_mode", "multi")
         resource_package_ids = task_config.get("resource_package_ids", [])
+        temp_git_username = task_config.get("temp_git_username")
+        temp_git_password = task_config.get("temp_git_password") or _TEMP_GIT_PASSWORD_CACHE.pop(
+            task_id, None
+        )
+        profile = task_config.get("profile")
+        tag_name = task_config.get("tag_name")
+        config_overrides = task_config.get("config_overrides") or {}
+        config_only_overrides = task_config.get("config_only_overrides", False)
 
         thread = threading.Thread(
             target=self._build_from_source_task,
@@ -2549,6 +2566,12 @@ class BuildManager:
                 resource_package_ids or [],
                 git_ref_type,
                 git_ref_name,
+                temp_git_username,
+                temp_git_password,
+                profile,
+                tag_name,
+                config_overrides,
+                config_only_overrides,
             ),
             daemon=True,
         )
@@ -2583,6 +2606,12 @@ class BuildManager:
         created_by: str = None,
         git_ref_type: str = "branch",
         git_ref_name: str = None,
+        temp_git_username: str = None,  # 临时 Git 认证用户名
+        temp_git_password: str = None,  # 临时 Git 认证密码
+        profile: str = None,  # 显式指定 profile
+        tag_name: str = None,  # 检出 Git tag
+        config_overrides: dict = None,  # 覆盖配置文件中的参数
+        config_only_overrides: bool = False,  # 仅使用 config_overrides 覆盖配置文件
     ):
         """从 Git 源码开始构建"""
         try:
@@ -2616,7 +2645,14 @@ class BuildManager:
                 created_by=created_by,
                 git_ref_type=git_ref_type,
                 git_ref_name=git_ref_name or branch,
+                temp_git_username=temp_git_username,
+                profile=profile,
+                tag_name=tag_name,
+                config_overrides=config_overrides or {},
+                config_only_overrides=config_only_overrides,
             )
+            if temp_git_password:
+                _TEMP_GIT_PASSWORD_CACHE[task_id] = temp_git_password
             print(f"✅ 任务创建成功: task_id={task_id}")
         except Exception as e:
             import traceback
@@ -2668,8 +2704,15 @@ class BuildManager:
         resource_package_ids: list = None,  # 资源包ID列表
         git_ref_type: str = "branch",
         git_ref_name: str = None,
+        temp_git_username: str = None,  # 临时 Git 认证用户名
+        temp_git_password: str = None,  # 临时 Git 认证密码
+        profile: str = None,  # 显式指定 profile
+        tag_name: str = None,  # 检出 Git tag
+        config_overrides: dict = None,  # 覆盖配置文件中的参数
+        config_only_overrides: bool = False,
     ):
         """从 Git 源码构建任务"""
+        config_overrides = config_overrides or {}
         # 兼容场景：页面选择多阶段模式但仅选了一个服务时，实际会走单服务构建分支。
         # 此时应优先使用该服务在 service_push_config 中的镜像名/标签，避免出现
         # push 到 registry/namespace（缺少镜像名）导致本地 tag 不存在。
@@ -2867,18 +2910,30 @@ class BuildManager:
                 if source_auth.get("password"):
                     git_config["password"] = source_auth["password"]
                 log(f"🔐 使用数据源的认证信息\n")
+            elif temp_git_username or temp_git_password:
+                if temp_git_username:
+                    git_config["username"] = temp_git_username
+                if temp_git_password:
+                    git_config["password"] = temp_git_password
+                log(f"🔐 使用临时 Git 认证信息\n")
             elif git_config.get("username") or git_config.get("password"):
                 log(f"🔐 使用全局 Git 配置的认证信息\n")
 
+            effective_git_ref_type = git_ref_type
+            effective_git_ref_name = git_ref_name or branch
+            if tag_name:
+                effective_git_ref_type = "tag"
+                effective_git_ref_name = tag_name
             # Git clone 会在目标目录下创建仓库目录，所以目标目录应该是父目录
-            # 调试日志：检查构建时使用的分支
             print(f"🔍 _build_from_source_task:")
             print(f"   - 参数branch: {branch}")
-            print(f"   - git_ref_type: {git_ref_type}")
-            print(f"   - git_ref_name: {git_ref_name or branch}")
+            print(f"   - git_ref_type: {effective_git_ref_type}")
+            print(f"   - git_ref_name: {effective_git_ref_name}")
+            print(f"   - 参数tag_name: {tag_name}")
+            print(f"   - 参数profile: {profile}")
             print(f"   - git_url: {git_url}")
-            if git_ref_type == "tag":
-                log(f"📌 准备克隆标签: {git_ref_name or branch}\n")
+            if effective_git_ref_type == "tag":
+                log(f"📌 准备克隆标签: {effective_git_ref_name}\n")
             else:
                 log(f"📌 准备克隆分支: {branch or '默认分支'}\n")
             clone_success, clone_error = self._clone_git_repo(
@@ -2887,8 +2942,8 @@ class BuildManager:
                 branch,
                 git_config,
                 log,
-                git_ref_type=git_ref_type,
-                git_ref_name=git_ref_name or branch,
+                git_ref_type=effective_git_ref_type,
+                git_ref_name=effective_git_ref_name,
             )
 
             if not clone_success:
@@ -2910,6 +2965,117 @@ class BuildManager:
 
             if not os.path.exists(actual_clone_dir):
                 raise RuntimeError("无法找到克隆的仓库目录")
+
+            # 解析 .app2docker.yaml 配置文件（profile）
+            from backend.app2docker_config import (
+                resolve_profile,
+                find_config_file,
+                parse_config,
+                config_to_build_params,
+                merge_with_overrides,
+                resolve_variables,
+            )
+
+            actual_branch = branch or ""
+            commit_hash = ""
+            try:
+                rev_result = subprocess.run(
+                    ["git", "-C", actual_clone_dir, "rev-parse", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                )
+                if rev_result.returncode == 0:
+                    commit_hash = rev_result.stdout.strip()
+                ref_result = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        actual_clone_dir,
+                        "rev-parse",
+                        "--abbrev-ref",
+                        "HEAD",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if ref_result.returncode == 0:
+                    ref_name = ref_result.stdout.strip()
+                    if ref_name and ref_name != "HEAD":
+                        actual_branch = ref_name
+            except Exception as e:
+                log(f"⚠️ 获取 Git 引用信息失败: {e}\n")
+
+            profile_tag_name = tag_name
+            if not profile_tag_name and effective_git_ref_type == "tag":
+                profile_tag_name = effective_git_ref_name
+            resolved_profile = resolve_profile(
+                profile, branch=actual_branch or branch, tag_name=profile_tag_name
+            )
+            config_path, used_profile = find_config_file(
+                actual_clone_dir, resolved_profile
+            )
+            if config_path:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    yaml_config = parse_config(f.read())
+                context = {
+                    "branch": actual_branch or branch or "",
+                    "profile": used_profile,
+                    "commit": commit_hash,
+                }
+                config_params = config_to_build_params(yaml_config, context)
+                if config_only_overrides:
+                    overrides = dict(config_overrides)
+                else:
+                    overrides = {
+                        "project_type": project_type,
+                        "template": selected_template,
+                        "image_name": image_name,
+                        "tag": tag,
+                        "push": should_push,
+                        "branch": branch,
+                        "dockerfile_name": dockerfile_name,
+                        "use_project_dockerfile": use_project_dockerfile,
+                        "sub_path": sub_path,
+                        "template_params": template_params,
+                    }
+                    overrides.update(config_overrides)
+                merged = merge_with_overrides(config_params, overrides)
+
+                if merged.get("project_type"):
+                    project_type = merged["project_type"]
+                if merged.get("template"):
+                    selected_template = merged["template"]
+                if merged.get("image_name"):
+                    image_name = merged["image_name"]
+                if merged.get("tag"):
+                    tag = resolve_variables(merged["tag"], context)
+                if "should_push" in merged:
+                    should_push = merged["should_push"]
+                if merged.get("template_params"):
+                    template_params = merged["template_params"]
+                if "use_project_dockerfile" in merged:
+                    use_project_dockerfile = merged["use_project_dockerfile"]
+                if merged.get("dockerfile_name"):
+                    dockerfile_name = merged["dockerfile_name"]
+                if merged.get("sub_path"):
+                    sub_path = merged["sub_path"]
+                if merged.get("selected_services"):
+                    selected_services = merged["selected_services"]
+                if merged.get("service_push_config"):
+                    service_push_config = merged["service_push_config"]
+
+                full_tag = f"{image_name}:{tag}"
+                build_context = os.path.join(
+                    BUILD_DIR, f"{image_name.replace('/', '_')}_{task_id[:8]}"
+                )
+                log(
+                    f"📄 使用配置文件: {os.path.basename(config_path)} (profile={used_profile})\n"
+                )
+            elif config_only_overrides and not selected_template:
+                raise RuntimeError(
+                    f"未找到 profile={resolved_profile} 对应的配置文件，"
+                    "且未提供 template 等构建参数"
+                )
 
             # 如果指定了子目录，使用子目录作为构建上下文
             source_dir = actual_clone_dir
@@ -5025,6 +5191,15 @@ class BuildTaskManager:
                         git_ref_type=serializable_kwargs.get("git_ref_type", "branch"),
                         git_ref_name=serializable_kwargs.get("git_ref_name")
                         or serializable_kwargs.get("branch"),
+                        temp_git_username=serializable_kwargs.get(
+                            "temp_git_username"
+                        ),
+                        profile=serializable_kwargs.get("profile"),
+                        tag_name=serializable_kwargs.get("tag_name"),
+                        config_overrides=serializable_kwargs.get("config_overrides"),
+                        config_only_overrides=serializable_kwargs.get(
+                            "config_only_overrides", False
+                        ),
                     )
                 elif task_type == "build":
                     # 文件上传构建（文件上传没有git_url，但可以保存其他配置）

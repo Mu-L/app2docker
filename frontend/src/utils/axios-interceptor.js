@@ -24,6 +24,7 @@ const TEAM_SCOPED_API_PREFIXES = [
   '/api/export-image',
   '/api/export-tasks',
   '/api/migration-tasks',
+  '/api/team-approval-requests',
   '/api/hosts',
   '/api/resource-packages',
   '/api/registries',
@@ -32,6 +33,7 @@ const TEAM_SCOPED_API_PREFIXES = [
   '/api/template-params',
   '/api/operation-logs',
   '/api/build-from-source',
+  '/api/build-with-config',
   '/api/upload',
 ]
 

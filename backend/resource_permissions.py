@@ -88,6 +88,40 @@ def is_team_owner(db: Session, team_id: str, user_id: str) -> bool:
     return member is not None and member.role == "owner"
 
 
+def is_team_owner_or_admin(db: Session, team_id: str, user_id: str) -> bool:
+    member = get_team_member(db, team_id, user_id)
+    return member is not None and member.role in ("owner", "admin")
+
+
+def _git_source_visible(db: Session, user_id: str, resource: GitSource) -> bool:
+    """Git 数据源可见性：个人源 / 团队私有 / 团内公开"""
+    scope = (resource.scope or "personal").strip().lower()
+    visibility = (resource.visibility or "private").strip().lower()
+    team_id = resource.team_id
+    created_by = resource.created_by
+    source_id = resource.source_id
+
+    has_explicit = (
+        get_effective_permission(db, user_id, "git_source", source_id) is not None
+    )
+
+    if scope == "personal":
+        return (
+            created_by == user_id
+            or is_team_owner_or_admin(db, team_id, user_id)
+            or has_explicit
+        )
+    if scope == "team" and visibility == "team_public":
+        return get_team_member(db, team_id, user_id) is not None
+    if scope == "team" and visibility == "private":
+        return (
+            created_by == user_id
+            or is_team_owner_or_admin(db, team_id, user_id)
+            or has_explicit
+        )
+    return False
+
+
 def list_accessible_team_ids(db: Session, user_id: str) -> Set[str]:
     rows = (
         db.query(TeamMember.team_id)
@@ -275,7 +309,21 @@ def get_effective_permission(
     resource_perm = _resource_permission_level(db, rt, resource_id, user_id)
     group_id = getattr(resource, "group_id", None)
     group_perm = _group_permission_level(db, rt, group_id, user_id)
-    return max_permission(resource_perm, group_perm)
+    effective = max_permission(resource_perm, group_perm)
+
+    if rt == "git_source":
+        scope = (getattr(resource, "scope", None) or "personal").strip().lower()
+        visibility = (
+            getattr(resource, "visibility", None) or "private"
+        ).strip().lower()
+        if scope == "team" and visibility == "team_public":
+            member = get_team_member(db, team_id, user_id)
+            if member and member.role in ("owner", "admin"):
+                return "admin"
+            if member:
+                return max_permission("run", effective)
+
+    return effective
 
 
 def user_can_access_resource(
@@ -321,6 +369,11 @@ def user_can_list_resource(
     team_id = getattr(resource, "team_id", None)
     if team_id is None:
         return True
+
+    rt = _canonical_type(resource_type)
+    if rt == "git_source":
+        return _git_source_visible(db, user_id, resource)
+
     if get_team_member(db, team_id, user_id):
         return True
     return get_effective_permission(db, user_id, resource_type, resource_id) is not None

@@ -16,6 +16,15 @@
           <AppIcon  name="plus" />
           新建迁移
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          class="w-full min-h-11 sm:w-auto"
+          @click="openTagRequestDialog"
+        >
+          <AppIcon name="tag" />
+          申请打标
+        </Button>
       </template>
     </PageToolbar>
 
@@ -61,6 +70,19 @@
             <dd><code class="break-all text-slate-800">{{ task.source_image }}</code></dd>
             <dt class="text-slate-500">目标</dt>
             <dd><code class="break-all text-slate-800">{{ task.target_image }}</code></dd>
+            <template v-if="task.approval_request_id">
+              <dt class="text-slate-500">审核</dt>
+              <dd>
+                <Badge :variant="approvalStatusVariant(task.approval_status)">
+                  {{ approvalStatusLabel(task.approval_status) }}
+                </Badge>
+                <span v-if="task.approval_review_note" class="ml-1 text-slate-500">
+                  {{ task.approval_review_note }}
+                </span>
+              </dd>
+            </template>
+            <dt class="text-slate-500">创建人</dt>
+            <dd>{{ taskCreatorLabel(task) }}</dd>
             <dt class="text-slate-500">定时</dt>
             <dd>
               <span v-if="task.schedule_enabled && task.schedule_cron">
@@ -89,7 +111,7 @@
               <AppIcon  name="play" class="mr-1" />执行
             </Button>
             <Button
-              v-if="task.schedule_cron"
+              v-if="canSetMigrationSchedule && task.schedule_cron"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -107,6 +129,7 @@
               <AppIcon  name="stop" />
             </Button>
             <Button
+              v-if="!task.approval_request_id"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -117,6 +140,7 @@
               <AppIcon  name="copy" />
             </Button>
             <Button
+              v-if="!task.approval_request_id"
               size="sm"
               variant="outline"
               class="min-h-11"
@@ -145,6 +169,7 @@
             <TableHead>任务名称</TableHead>
             <TableHead>源镜像</TableHead>
             <TableHead>目标镜像</TableHead>
+            <TableHead>创建人</TableHead>
             <TableHead>状态</TableHead>
             <TableHead>定时</TableHead>
             <TableHead>执行次数</TableHead>
@@ -160,6 +185,30 @@
             </TableCell>
             <TableCell>
               <code class="text-xs">{{ task.target_image }}</code>
+              <div v-if="task.approval_request_id" class="mt-1 flex flex-wrap items-center gap-1 text-xs">
+                <Badge :variant="approvalStatusVariant(task.approval_status)">
+                  {{ approvalTypeLabel(task.approval_request_type) }} · {{ approvalStatusLabel(task.approval_status) }}
+                </Badge>
+                <span
+                  v-if="task.approval_review_note"
+                  class="max-w-[12rem] truncate text-slate-500"
+                  :title="task.approval_review_note"
+                >
+                  {{ task.approval_review_note }}
+                </span>
+              </div>
+            </TableCell>
+            <TableCell class="text-sm text-slate-600">
+              <span
+                class="inline-flex max-w-[6.5rem] items-center gap-1 truncate"
+                :title="taskCreatorLabel(task)"
+              >
+                <AppIcon
+                  :name="task.created_by ? 'user' : 'users'"
+                  class="shrink-0 text-slate-400"
+                />
+                <span class="truncate">{{ taskCreatorLabel(task) }}</span>
+              </span>
             </TableCell>
             <TableCell>
               <Badge v-if="task.status === 'idle'" variant="default">空闲</Badge>
@@ -193,6 +242,7 @@
             <TableCell class="text-end">
               <div class="flex flex-wrap justify-end gap-1">
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running' || task.status === 'pending' || executingId === task.task_id"
@@ -202,7 +252,7 @@
                   <AppIcon  name="play" />
                 </Button>
                 <Button
-                  v-if="task.schedule_cron"
+                  v-if="canSetMigrationSchedule && task.schedule_cron"
                   size="sm"
                   variant="outline"
                   :title="task.schedule_enabled ? '禁用定时' : '启用定时'"
@@ -219,6 +269,7 @@
                   <AppIcon  name="stop" />
                 </Button>
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running'"
@@ -228,6 +279,7 @@
                   <AppIcon  name="copy" />
                 </Button>
                 <Button
+                  v-if="!task.approval_request_id"
                   size="sm"
                   variant="outline"
                   :disabled="task.status === 'running'"
@@ -401,7 +453,10 @@
         </div>
 
         <!-- 定时 -->
-        <div class="rounded-lg border border-slate-200 p-3 space-y-3">
+        <div
+          v-if="canSetMigrationSchedule"
+          class="rounded-lg border border-slate-200 p-3 space-y-3"
+        >
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <Label class="mb-0!">定时执行</Label>
             <label class="flex min-h-11 items-center gap-2 text-sm">
@@ -456,6 +511,81 @@
         </Button>
       </template>
     </FormDialog>
+
+    <FormDialog
+      v-model="showTagRequestDialog"
+      title="申请镜像打标"
+      icon="tag"
+      size="md"
+    >
+      <form class="space-y-4" @submit.prevent="submitTagRequest">
+        <AlertBanner
+          message="提交后将进入团队申请中心，团队管理员同意后会立即执行打标。"
+        />
+        <div class="space-y-2">
+          <Label>镜像仓库 <span class="text-red-600">*</span></Label>
+          <NativeSelect v-model="tagRequestForm.registry_name" required>
+            <option value="" disabled>请选择镜像仓库</option>
+            <option v-for="reg in registries" :key="'tag-' + (reg.registry_id || reg.name)" :value="reg.name">
+              {{ reg.name }}{{ reg.active ? " (激活)" : "" }}
+            </option>
+          </NativeSelect>
+        </div>
+        <div class="space-y-2">
+          <Label>镜像名 <span class="text-red-600">*</span></Label>
+          <Input
+            v-model="tagRequestForm.image_name"
+            class="font-mono text-sm"
+            placeholder="namespace/app"
+            required
+          />
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div class="space-y-2">
+            <Label>源标签 <span class="text-red-600">*</span></Label>
+            <Input v-model="tagRequestForm.source_tag" class="font-mono text-sm" required />
+          </div>
+          <div class="space-y-2">
+            <Label>目标标签 <span class="text-red-600">*</span></Label>
+            <Input v-model="tagRequestForm.target_tag" class="font-mono text-sm" required />
+          </div>
+        </div>
+        <div
+          v-if="tagSourcePreview || tagTargetPreview"
+          class="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+        >
+          <div v-if="tagSourcePreview">
+            源镜像地址：<code class="break-all text-slate-800">{{ tagSourcePreview }}</code>
+          </div>
+          <div v-if="tagTargetPreview" class="mt-1">
+            目标镜像地址：<code class="break-all text-slate-800">{{ tagTargetPreview }}</code>
+          </div>
+        </div>
+        <label class="flex min-h-11 items-center gap-2 text-sm text-slate-700">
+          <input v-model="tagRequestForm.allow_overwrite" type="checkbox" class="h-5 w-5 rounded" />
+          允许覆盖已存在的目标标签
+        </label>
+        <AlertBanner
+          v-if="tagRequestForm.allow_overwrite"
+          message="覆盖标签会影响使用该标签拉取镜像的环境，请确认目标标签可以被替换。"
+          variant="warning"
+        />
+      </form>
+      <template #footer>
+        <Button variant="outline" type="button" class="w-full sm:w-auto" @click="showTagRequestDialog = false">
+          取消
+        </Button>
+        <Button
+          type="button"
+          class="w-full sm:w-auto"
+          :disabled="tagRequestSaving || !registries.length"
+          @click="submitTagRequest"
+        >
+          <AppIcon v-if="tagRequestSaving" name="spinner" spin />
+          提交申请
+        </Button>
+      </template>
+    </FormDialog>
   </div>
 </template>
 
@@ -506,7 +636,19 @@ const executingId = ref(null);
 const testingSource = ref(false);
 const sourceTestResult = ref(null);
 const cronPresetKey = ref("custom");
+const showTagRequestDialog = ref(false);
+const tagRequestSaving = ref(false);
 let refreshInterval = null;
+
+const emptyTagRequestForm = () => ({
+  registry_name:"",
+  image_name:"",
+  source_tag:"latest",
+  target_tag:"",
+  allow_overwrite: false,
+});
+
+const tagRequestForm = ref(emptyTagRequestForm());
 
 const emptyForm = () => ({
   task_name:"",
@@ -674,12 +816,29 @@ const targetPreview = computed(() =>
   ),
 );
 
+const tagSourcePreview = computed(() =>
+  buildFullImageRef(
+    tagRequestForm.value.registry_name,
+    tagRequestForm.value.image_name,
+    tagRequestForm.value.source_tag,
+  ),
+);
+
+const tagTargetPreview = computed(() =>
+  buildFullImageRef(
+    tagRequestForm.value.registry_name,
+    tagRequestForm.value.image_name,
+    tagRequestForm.value.target_tag,
+  ),
+);
+
 const canTestSourceImage = computed(
   () =>
     !!form.value.source_registry_name &&
     !!form.value.source_image_path?.trim() &&
     !!sourcePreview.value,
 );
+const canSetMigrationSchedule = computed(() => teamStore.canManageTeam);
 
 function cronPresetLabel(cron) {
   const p = CRON_PRESETS.find((x) => x.cron === cron);
@@ -716,6 +875,38 @@ watch(
 function formatTime(iso) {
   if (!iso) return"-";
   return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
+function approvalStatusLabel(status) {
+  return {
+    pending: "待审核",
+    approved: "已同意",
+    running: "执行中",
+    completed: "已完成",
+    failed: "失败",
+    rejected: "已驳回",
+    canceled: "已取消",
+  }[status] || status || "-";
+}
+
+function approvalStatusVariant(status) {
+  if (status === "completed") return "success";
+  if (status === "failed" || status === "rejected") return "danger";
+  if (status === "running" || status === "approved") return "info";
+  if (status === "pending") return "warning";
+  return "default";
+}
+
+function approvalTypeLabel(type) {
+  if (type === "image_tag") return "打标";
+  if (type === "image_migration") return "迁移";
+  return "审核";
+}
+
+function taskCreatorLabel(task) {
+  if (task?.created_by_username) return task.created_by_username;
+  if (task?.created_by) return task.created_by;
+  return"团队";
 }
 
 function splitImageRef(fullRef) {
@@ -936,6 +1127,64 @@ function openCreateDialog() {
   showDialog.value = true;
 }
 
+function openTagRequestDialog() {
+  if (!registries.value.length) {
+    toastError("请先在「镜像仓库」中配置至少一个仓库");
+    return;
+  }
+  const active = registries.value.find((r) => r.active) || registries.value[0];
+  tagRequestForm.value = {
+    ...emptyTagRequestForm(),
+    registry_name: active?.name || "",
+  };
+  showTagRequestDialog.value = true;
+}
+
+async function submitTagRequest() {
+  const payload = {
+    registry_name: tagRequestForm.value.registry_name,
+    image_name: (tagRequestForm.value.image_name || "").trim().replace(/^\/+|\/+$/g, ""),
+    source_tag: (tagRequestForm.value.source_tag || "").trim() || "latest",
+    target_tag: (tagRequestForm.value.target_tag || "").trim(),
+    allow_overwrite: !!tagRequestForm.value.allow_overwrite,
+  };
+  if (!payload.registry_name) {
+    toastError("请选择镜像仓库");
+    return;
+  }
+  if (!payload.image_name) {
+    toastError("请填写镜像名");
+    return;
+  }
+  if (payload.image_name.split("/").pop().includes(":")) {
+    toastError("镜像名不能包含标签，请分别填写源标签和目标标签");
+    return;
+  }
+  if (!payload.target_tag) {
+    toastError("请填写目标标签");
+    return;
+  }
+  if (payload.source_tag === payload.target_tag) {
+    toastError("源标签和目标标签不能相同");
+    return;
+  }
+
+  tagRequestSaving.value = true;
+  try {
+    await axios.post("/api/team-approval-requests", {
+      request_type: "image_tag",
+      payload,
+    });
+    toastSuccess("打标申请已提交");
+    showTagRequestDialog.value = false;
+    await loadTasks();
+  } catch (e) {
+    toastApiError(e, "提交打标申请失败");
+  } finally {
+    tagRequestSaving.value = false;
+  }
+}
+
 function openEditDialog(task) {
   editingTaskId.value = task.task_id;
   isCopyDialog.value = false;
@@ -953,6 +1202,10 @@ function openCopyDialog(task) {
   editingTaskId.value = null;
   isCopyDialog.value = true;
   form.value = buildFormFromTask(task, { forCopy: true });
+  if (!canSetMigrationSchedule.value) {
+    form.value.schedule_cron ="";
+    form.value.schedule_enabled = false;
+  }
   cronPresetKey.value = matchCronPresetKey(form.value.schedule_cron);
   sourceTestResult.value = null;
   showDialog.value = true;
@@ -973,7 +1226,11 @@ async function saveTask() {
     toastError("请填写镜像路径");
     return;
   }
-  if (form.value.schedule_enabled && !form.value.schedule_cron?.trim()) {
+  if (
+    canSetMigrationSchedule.value &&
+    form.value.schedule_enabled &&
+    !form.value.schedule_cron?.trim()
+  ) {
     toastError("启用定时时请填写或选择 Cron 表达式");
     return;
   }
@@ -986,16 +1243,34 @@ async function saveTask() {
       source_image,
       target_registry_name: form.value.target_registry_name,
       target_image,
-      schedule_cron: form.value.schedule_enabled ? form.value.schedule_cron.trim() :"",
-      schedule_enabled: form.value.schedule_enabled,
     };
+    if (canSetMigrationSchedule.value) {
+      payload.schedule_cron = form.value.schedule_enabled
+        ? form.value.schedule_cron.trim()
+        :"";
+      payload.schedule_enabled = form.value.schedule_enabled;
+    }
 
     if (editingTaskId.value) {
-      await axios.put(`/api/migration-tasks/${editingTaskId.value}`, payload);
+      const res = await axios.put(`/api/migration-tasks/${editingTaskId.value}`, payload);
+      if (res.data?.approval_required) {
+        toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+        showDialog.value = false;
+        isCopyDialog.value = false;
+        await loadTasks();
+        return;
+      }
       toastSuccess("迁移任务已更新");
     } else {
       payload.execute_now = form.value.execute_now;
-      await axios.post("/api/migration-tasks", payload);
+      const res = await axios.post("/api/migration-tasks", payload);
+      if (res.data?.approval_required) {
+        toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+        showDialog.value = false;
+        isCopyDialog.value = false;
+        await loadTasks();
+        return;
+      }
       if (isCopyDialog.value) {
         toastSuccess(
           form.value.execute_now ?"已复制并开始执行" :"已复制迁移任务",
@@ -1019,7 +1294,12 @@ async function saveTask() {
 async function executeTask(task) {
   executingId.value = task.task_id;
   try {
-    await axios.post(`/api/migration-tasks/${task.task_id}/execute`);
+    const res = await axios.post(`/api/migration-tasks/${task.task_id}/execute`);
+    if (res.data?.approval_required) {
+      toastSuccess("镜像迁移申请已提交，待团队管理员审核");
+      await loadTasks();
+      return;
+    }
     toastSuccess("迁移任务已启动");
     await loadTasks();
     startPolling();

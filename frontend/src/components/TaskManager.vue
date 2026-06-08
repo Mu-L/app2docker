@@ -368,7 +368,7 @@
     </div>
 
     <div class="hidden md:block">
-    <Table min-width-class="min-w-[78rem]">
+    <Table min-width-class="min-w-[52rem]">
       <TableHeader>
         <TableRow>
           <TableHead class="w-[100px]">类型</TableHead>

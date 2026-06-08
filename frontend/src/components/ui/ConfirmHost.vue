@@ -1,5 +1,5 @@
 <template>
-  <BaseDialog :model-value="!!pending" @update:model-value="onBackdropClose">
+  <BaseDialog :model-value="!!pending" :z-index="3000" @update:model-value="onBackdropClose">
     <div
       class="relative z-10 mx-auto w-full max-w-md shrink-0 rounded-lg border border-slate-200 bg-white text-slate-900 shadow-xl"
       @click.stop

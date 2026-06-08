@@ -1,5 +1,5 @@
 <template>
-  <div class="step-build-panel">
+  <div class="step-build-panel min-w-0">
 
     <StepsIndicator
       :steps="buildStepIndicators"
@@ -20,27 +20,35 @@
           <label class="block text-sm font-medium text-slate-700">
             数据源类型 <span class="text-red-500">*</span>
           </label>
-          <div class="button-group w-full" role="group">
-            <button
-              type="button"
-              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
-              :class="buildConfig.sourceType === 'file'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
-                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="buildConfig.sourceType = 'file'"
+          <div class="flex w-full gap-2" role="group">
+            <input
+              type="radio"
+              class="choice-input"
+              id="source-file"
+              v-model="buildConfig.sourceType"
+              value="file"
+              @change="switchSourceType('file')"
+            />
+            <label
+              for="source-file"
+              class="inline-flex flex-1 min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
             >
-              <AppIcon  name="file-upload" /> 上传文件
-            </button>
-            <button
-              type="button"
-              class="inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50"
-              :class="buildConfig.sourceType === 'git'
-                  ? 'border border-blue-600 bg-blue-600 text-white hover:bg-blue-700'
-                  : 'border border-blue-300 text-blue-700 hover:bg-blue-50'"
-              @click="buildConfig.sourceType = 'git'"
+              <AppIcon name="file-upload" /> 上传文件
+            </label>
+            <input
+              type="radio"
+              class="choice-input"
+              id="source-git"
+              v-model="buildConfig.sourceType"
+              value="git"
+              @change="switchSourceType('git')"
+            />
+            <label
+              for="source-git"
+              class="inline-flex flex-1 min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50"
             >
-              <AppIcon  name="code-branch" /> Git 数据源
-            </button>
+              <AppIcon name="code-branch" /> Git 数据源
+            </label>
           </div>
         </div>
 
@@ -90,57 +98,100 @@
         </div>
 
         <!-- Git 数据源 -->
-        <div v-if="buildConfig.sourceType === 'git'" class="mb-3">
-          <label class="block text-sm font-medium text-slate-700">
-            Git 数据源 <span class="text-red-500">*</span>
-          </label>
-          <div class="relative">
-            <div class="field-group w-full">
-              <input
-                v-model="gitSourceSearchQuery"
-                type="text"
-                class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
-                placeholder="搜索数据源..."
-                @input="searchGitSources($event.target.value)"
-                @focus="gitSourceDropdownOpen = true"
-                @blur="handleGitSourceBlur"
-                required
-              />
-              <span v-if="gitSourceSearchLoading" class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">
-                <AppIcon  name="spinner" spin />
+        <div v-if="buildConfig.sourceType === 'git' && !showInlineNewSource" class="mb-3 min-w-0">
+          <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-stretch">
+            <button
+              type="button"
+              class="flex min-h-11 w-full flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-blue-300 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 transition-colors hover:border-blue-400 hover:bg-blue-100 sm:max-w-xs"
+              @click="openInlineNewSource"
+            >
+              <span class="inline-flex items-center gap-2 text-base">
+                <AppIcon name="plus" />
+                新建数据源
               </span>
-            </div>
-            <div
-              v-if="gitSourceDropdownOpen && gitSourceSearchResults.length > 0"
-              class="absolute z-50 mt-1 min-w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg show w-full"
-              style="max-height: 300px; overflow-y: auto;"
-            >
-              <a
-                v-for="source in gitSourceSearchResults"
-                :key="source.source_id"
-                href="#"
-                class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
-                @click.prevent="selectGitSource(source)"
-              >
-                <div>
-                  <strong>{{ source.name }}</strong>
-                  <br />
-                  <small class="text-slate-500">{{ formatGitUrl(source.git_url) }}</small>
+              <span class="text-xs font-normal text-blue-600/80">填写仓库地址并验证保存</span>
+            </button>
+            <div class="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white p-3">
+              <label class="mb-2 block text-sm font-medium text-slate-700">
+                选择已有数据源 <span class="text-red-500">*</span>
+              </label>
+              <div class="relative">
+                <div class="field-group w-full">
+                  <input
+                    v-model="gitSourceSearchQuery"
+                    type="text"
+                    class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                    placeholder="搜索名称或仓库地址..."
+                    @input="searchGitSources($event.target.value)"
+                    @focus="gitSourceDropdownOpen = true"
+                    @blur="handleGitSourceBlur"
+                    required
+                  />
+                  <span
+                    v-if="gitSourceSearchLoading"
+                    class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500"
+                  >
+                    <AppIcon name="spinner" spin />
+                  </span>
                 </div>
-              </a>
-            </div>
-            <div
-              v-if="gitSourceDropdownOpen && !gitSourceSearchLoading && gitSourceSearchResults.length === 0 && gitSourceSearchQuery"
-              class="absolute z-50 mt-1 min-w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg show w-full"
-            >
-              <div class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-100 text-slate-500">无匹配结果</div>
+                <div
+                  v-if="gitSourceDropdownOpen"
+                  class="absolute z-50 mt-1 min-w-40 w-full rounded-md border border-slate-200 bg-white p-1 shadow-lg show"
+                  style="max-height: 300px; overflow-y: auto;"
+                >
+                  <template v-if="gitSourceSearchResults.length > 0">
+                    <a
+                      v-for="source in gitSourceSearchResults"
+                      :key="source.source_id"
+                      href="#"
+                      class="flex w-full min-w-0 items-start gap-2 rounded-sm px-2 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                      @mousedown.prevent="selectGitSource(source)"
+                    >
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <strong class="break-words">{{ source.name }}</strong>
+                          <Badge :variant="source.scope === 'team' ? 'info' : 'default'" class="shrink-0">
+                            {{ source.scope === 'team' ? '团队' : '个人' }}
+                          </Badge>
+                          <Badge
+                            v-if="source.scope === 'team'"
+                            :variant="source.visibility === 'team_public' ? 'success' : 'warning'"
+                            class="shrink-0"
+                          >
+                            {{ source.visibility === 'team_public' ? '团内公开' : '授权可见' }}
+                          </Badge>
+                        </div>
+                        <small class="block break-all text-slate-500">{{ formatGitUrl(source.git_url) }}</small>
+                        <small
+                          v-if="source.created_by_name"
+                          class="block text-xs text-slate-400"
+                        >
+                          {{ source.created_by_name }}
+                        </small>
+                      </div>
+                    </a>
+                  </template>
+                  <div
+                    v-else-if="!gitSourceSearchLoading && gitSourceSearchQuery"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-500"
+                  >
+                    无匹配结果，可点击左侧「新建数据源」
+                  </div>
+                  <div
+                    v-else-if="!gitSourceSearchLoading"
+                    class="px-2 py-1.5 text-sm text-slate-500"
+                  >
+                    输入关键词搜索，或点击左侧「新建数据源」
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           <div
-            v-if="buildConfig.sourceId && repoVerified"
+            v-if="buildConfig.sourceId && repoVerified && !showInlineNewSource"
             class="rounded-md border px-3 py-2 text-sm border-green-200 bg-green-50 text-green-800 px-2 py-1 text-xs mt-2 mb-0"
           >
-            <AppIcon  name="check-circle" />
+            <AppIcon name="check-circle" />
             数据源已选择：{{ branchesAndTags.branches.length }} 个分支、{{
               branchesAndTags.tags.length
             }}
@@ -148,8 +199,100 @@
           </div>
         </div>
 
-        <!-- 分支选择（仅Git数据源） -->
-        <div v-if="buildConfig.sourceType === 'git' && buildConfig.sourceId" class="mb-3">
+        <!-- 内联新建数据源 -->
+        <div
+          v-if="buildConfig.sourceType === 'git' && showInlineNewSource"
+          class="mb-3 rounded-lg border-2 border-blue-200 bg-blue-50/50 p-3 sm:p-4"
+        >
+          <div class="mb-3 flex items-center justify-between gap-2">
+            <h6 class="text-base font-semibold text-slate-900">
+              <AppIcon name="plus" class="text-blue-600" /> 新建数据源
+            </h6>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              class="min-h-11 shrink-0"
+              @click="cancelInlineNewSource"
+            >
+              返回选择已有
+            </Button>
+          </div>
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              数据源名称 <span class="text-red-500">*</span>
+            </label>
+            <Input
+              v-model="newSourceForm.name"
+              placeholder="例如：主项目仓库"
+              required
+            />
+          </div>
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              Git 仓库地址 <span class="text-red-500">*</span>
+            </label>
+            <Input
+              v-model="newSourceForm.git_url"
+              placeholder="https://github.com/user/repo.git"
+              required
+            />
+          </div>
+          <div class="mb-3">
+            <label class="block text-sm font-medium text-slate-700">
+              认证信息（选填）
+            </label>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label class="block text-sm font-medium text-slate-700">用户名</label>
+                <Input
+                  v-model="newSourceForm.username"
+                  placeholder="username 或 token"
+                />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700">密码/Token</label>
+                <Input
+                  v-model="newSourceForm.password"
+                  type="password"
+                  placeholder="password 或 access token"
+                />
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              class="w-full sm:w-auto"
+              @click="cancelInlineNewSource"
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              class="w-full sm:w-auto"
+              @click="verifyAndSaveNewSource"
+              :disabled="!newSourceForm.git_url.trim() || !newSourceForm.name.trim() || verifyingNewSource"
+            >
+              <AppIcon v-if="verifyingNewSource" name="spinner" spin />
+              <AppIcon v-else name="search" />
+              {{ verifyingNewSource ? "验证并保存中..." : "验证并保存" }}
+            </Button>
+          </div>
+          <div class="text-xs text-slate-500 text-sm mt-2">
+            <AppIcon name="info-circle" />
+            验证通过后将自动保存为<strong>个人</strong>数据源（同 URL 将更新凭据），并进入分支选择
+          </div>
+        </div>
+
+        <!-- 分支选择（Git 数据源） -->
+        <div
+          v-if="buildConfig.sourceType === 'git' && buildConfig.sourceId"
+          class="mb-3"
+        >
           <label class="block text-sm font-medium text-slate-700">
             分支/标签 <span class="text-red-500">*</span>
           </label>
@@ -496,7 +639,8 @@
           <div
             v-if="
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'"
+              isGitLikeSource
+            "
             class="mb-3"
           >
             <label class="block text-sm font-medium text-slate-700"
@@ -545,7 +689,8 @@
             v-if="
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'"
+              isGitLikeSource
+            "
             class="mb-3"
           >
             <div class="rounded-lg border border-blue-200 bg-white shadow-sm">
@@ -1059,8 +1204,9 @@
             !(
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'
-            )"
+              isGitLikeSource
+            )
+          "
           class="grid grid-cols-1 gap-3 md:grid-cols-12 mb-3"
         >
           <div class="md:col-span-6">
@@ -1093,8 +1239,9 @@
             !(
               buildConfig.pushMode === 'single' &&
               !buildConfig.useProjectDockerfile &&
-              buildConfig.sourceType === 'git'
-            )"
+              isGitLikeSource
+            )
+          "
           class="mb-3"
         >
           <div class="flex items-center gap-2">
@@ -1307,9 +1454,9 @@
                   <div class="mb-2">
                     <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium border border-sky-200 bg-sky-50 text-sky-700 mr-2">类型</span>
                     <strong>{{
-                      buildConfig.sourceType ==="file"
-                        ?"文件上传"
-                        :"Git 数据源"
+                      buildConfig.sourceType === "file"
+                        ? "文件上传"
+                        : "Git 数据源"
                     }}</strong>
                   </div>
                   <div v-if="buildConfig.sourceType === 'file'" class="mb-2">
@@ -1673,6 +1820,9 @@
 import { toastSuccess, toastError, toastInfo, toastApiError } from "@/utils/notify";
 
 import Button from "@/components/ui/button/Button.vue";
+import { Badge } from "@/components/ui/badge";
+import { getUsername } from "@/utils/auth";
+import { Input } from "@/components/ui/input";
 import { registerTask } from "@/composables/useTaskCompletionWatcher";
 import { showToast } from "@/composables/useToast";
 import { useTeamStore } from "@/stores/team";
@@ -1684,7 +1834,7 @@ import { Codemirror } from 'vue-codemirror'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { StreamLanguage } from '@codemirror/language'
 import { javascript } from '@codemirror/legacy-modes/mode/javascript'
-import { getGitInfoWithCache, getGitCache, clearGitCache } from '../utils/gitCache.js';
+import { getGitInfoWithCache, getGitCache, clearGitCache, setGitCache } from '../utils/gitCache.js';
 import { getDockerfilesWithCache } from '../utils/dockerfileCache.js';
 import { getServiceAnalysisWithCache } from '../utils/serviceAnalysisCache.js';
 import { 
@@ -1708,12 +1858,12 @@ const building = ref(false);
 
 // 构建配置
 const buildConfig = ref({
-  sourceType:"git", // 'file' 或 'git'
+  sourceType: "git", // 'file' | 'git'
   file: null,
-  sourceId:"",
-  branch:"",
-  projectType:"jar",
-  template:"",
+  sourceId: "",
+  branch: "",
+  projectType: "jar",
+  template: "",
   useProjectDockerfile: true,
   dockerfileName:"Dockerfile",
   imageName:"myapp/demo",
@@ -1747,6 +1897,14 @@ const availableDockerfiles = ref([]);
 const scanningDockerfiles = ref(false);
 const dockerfilesError = ref("");
 const refreshingBranches = ref(false);
+const showInlineNewSource = ref(false);
+const verifyingNewSource = ref(false);
+const newSourceForm = ref({
+  name: "",
+  git_url: "",
+  username: "",
+  password: "",
+});
 
 // 项目类型相关
 const projectTypesList = ref(getProjectTypesSync()); // 从缓存获取项目类型列表
@@ -1832,15 +1990,159 @@ const fileAccept = computed(() => {
   return".zip,.tar,.tar.gz,.tgz";
 });
 
+const isGitLikeSource = computed(() => buildConfig.value.sourceType === "git");
+
 const canProceedStep1 = computed(() => {
-  if (buildConfig.value.sourceType ==="file") {
+  if (buildConfig.value.sourceType === "file") {
     return buildConfig.value.file !== null;
-  } else {
-    // Git数据源需要选择数据源和分支
-    return buildConfig.value.sourceId !=="" && repoVerified.value && 
-           (buildConfig.value.branch || branchesAndTags.value.default_branch);
   }
+  return (
+    buildConfig.value.sourceId !== "" &&
+    repoVerified.value &&
+    (buildConfig.value.branch || branchesAndTags.value.default_branch)
+  );
 });
+
+function switchSourceType(type) {
+  buildConfig.value.sourceType = type;
+  if (type === "file") {
+    buildConfig.value.useProjectDockerfile = false;
+    showInlineNewSource.value = false;
+  } else if (type === "git") {
+    buildConfig.value.branch = "";
+    repoVerified.value = false;
+    branchesAndTags.value = { branches: [], tags: [], default_branch: null };
+  }
+}
+
+function resetNewSourceForm() {
+  newSourceForm.value = {
+    name: "",
+    git_url: "",
+    username: "",
+    password: "",
+  };
+}
+
+function openInlineNewSource() {
+  showInlineNewSource.value = true;
+  gitSourceDropdownOpen.value = false;
+  buildConfig.value.sourceId = "";
+  buildConfig.value.branch = "";
+  repoVerified.value = false;
+  branchesAndTags.value = { branches: [], tags: [], default_branch: null };
+  selectedGitSourceDisplay.value = "";
+  const query = gitSourceSearchQuery.value?.trim();
+  if (query && !query.includes("(") && query.includes("/")) {
+    newSourceForm.value.git_url = query;
+    autoFillNewSourceNameFromUrl();
+  }
+}
+
+function cancelInlineNewSource() {
+  showInlineNewSource.value = false;
+  resetNewSourceForm();
+}
+
+function autoFillNewSourceNameFromUrl() {
+  const url = newSourceForm.value.git_url?.trim();
+  if (!url || newSourceForm.value.name) return;
+  const parts = url.replace(/\.git$/, "").split("/");
+  const repoName = parts[parts.length - 1];
+  if (repoName) {
+    newSourceForm.value.name = repoName;
+  }
+}
+
+async function verifyAndSaveNewSource() {
+  const gitUrl = newSourceForm.value.git_url?.trim();
+  const name = newSourceForm.value.name?.trim();
+  const teamId = teamStore.activeTeamIdForApi;
+  if (!teamId) {
+    toastError("请先选择团队");
+    return;
+  }
+  if (!gitUrl) {
+    toastError("请输入 Git 仓库地址");
+    return;
+  }
+  if (!name) {
+    toastError("请输入数据源名称");
+    return;
+  }
+
+  const existingPersonal = findExistingPersonalSource(gitUrl);
+
+  verifyingNewSource.value = true;
+  try {
+    const verifyRes = await axios.post("/api/verify-git-repo", {
+      git_url: gitUrl,
+      username: newSourceForm.value.username || undefined,
+      password: newSourceForm.value.password || undefined,
+    });
+    const verifyData = verifyRes.data || {};
+    const branches = verifyData.branches || [];
+    const tags = verifyData.tags || [];
+    const defaultBranch = verifyData.default_branch || null;
+    const dockerfiles = verifyData.dockerfiles || {};
+
+    if (branches.length === 0 && tags.length === 0) {
+      toastError("验证失败：未获取到分支或标签信息");
+      return;
+    }
+
+    const saveRes = await axios.post("/api/git-sources", {
+      team_id: teamId,
+      name,
+      git_url: gitUrl,
+      branches,
+      tags,
+      default_branch: defaultBranch,
+      username: newSourceForm.value.username || null,
+      password: newSourceForm.value.password || null,
+      dockerfiles: Object.keys(dockerfiles).length > 0 ? dockerfiles : null,
+      scope: "personal",
+      visibility: "private",
+    });
+
+    const sourceId = saveRes.data?.source_id;
+    const sourceUpdated = !!saveRes.data?.source_updated;
+    await loadGitSources();
+
+    const newSource =
+      gitSources.value.find((s) => s.source_id === sourceId) ||
+      gitSources.value.find(
+        (s) => s.git_url === gitUrl && (s.scope || "personal") === "personal"
+      );
+
+    if (!newSource) {
+      toastError("数据源已保存，但未能自动选中，请从列表重新选择");
+      showInlineNewSource.value = false;
+      resetNewSourceForm();
+      return;
+    }
+
+    setGitCache(gitUrl, sourceId, {
+      branches,
+      tags,
+      default_branch: defaultBranch,
+    });
+
+    selectGitSource(newSource);
+    showInlineNewSource.value = false;
+    resetNewSourceForm();
+    if (sourceUpdated || existingPersonal) {
+      toastSuccess("个人数据源凭据已更新并选中");
+    } else {
+      toastSuccess("个人数据源已创建并选中");
+    }
+  } catch (error) {
+    console.error("创建数据源失败:", error);
+    toastApiError(error, "验证或保存数据源失败");
+  } finally {
+    verifyingNewSource.value = false;
+  }
+}
 
 function buildImageRef(imageName, tag) {
   const image = (imageName ||"").trim();
@@ -1865,7 +2167,7 @@ function collectPushImageRefs() {
   const usesServiceCards =
     !forceSingleAppMode.value &&
     services.value.length > 0 &&
-    buildConfig.value.sourceType ==="git";
+    isGitLikeSource.value;
 
   if (
     usesServiceCards &&
@@ -2065,11 +2367,37 @@ function formatFileSize(bytes) {
 
 // Git 数据源处理
 let gitSourceSearchTimeout = null;
+function sortGitSourcesForDisplay(sources) {
+  const currentUser = getUsername();
+  return [...sources].sort((a, b) => {
+    const aOwn =
+      a.scope !== "team" && a.created_by_name && a.created_by_name === currentUser;
+    const bOwn =
+      b.scope !== "team" && b.created_by_name && b.created_by_name === currentUser;
+    if (aOwn !== bOwn) return aOwn ? -1 : 1;
+    return (a.name || "").localeCompare(b.name || "");
+  });
+}
+
+function findExistingPersonalSource(gitUrl) {
+  const currentUser = getUsername();
+  return gitSources.value.find(
+    (s) =>
+      s.git_url === gitUrl &&
+      (s.scope || "personal") === "personal" &&
+      s.created_by_name === currentUser
+  );
+}
+
 async function loadGitSources(query ="") {
   try {
-    const params = query ? { query: query.trim() } : {};
+    const teamId = teamStore.activeTeamIdForApi;
+    const params = {};
+    if (query) params.query = query.trim();
+    if (teamId) params.team_id = teamId;
     const res = await axios.get("/api/git-sources", { params });
-    const sources = res.data.sources || [];
+    let sources = res.data.sources || [];
+    sources = sortGitSourcesForDisplay(sources);
     
     if (query) {
       gitSourceSearchResults.value = sources;
@@ -2123,7 +2451,8 @@ function selectGitSource(source) {
     gitSourceDropdownOpen.value = false;
     return;
   }
-  
+
+  showInlineNewSource.value = false;
   buildConfig.value.sourceId = source.source_id;
   selectedGitSourceDisplay.value = `${source.name} (${formatGitUrl(source.git_url)})`;
   gitSourceSearchQuery.value = selectedGitSourceDisplay.value;
@@ -2172,6 +2501,28 @@ async function onSourceSelected() {
   }
 }
 
+function applyBranchesAndTags(data) {
+  if (!data) return false;
+  branchesAndTags.value = {
+    branches: data.branches || [],
+    tags: data.tags || [],
+    default_branch: data.default_branch || null,
+  };
+  repoVerified.value = true;
+
+  const currentBranch = buildConfig.value.branch;
+  if (
+    currentBranch &&
+    !branchesAndTags.value.branches.includes(currentBranch) &&
+    !branchesAndTags.value.tags.includes(currentBranch)
+  ) {
+    buildConfig.value.branch = branchesAndTags.value.default_branch || "";
+  } else if (!currentBranch) {
+    buildConfig.value.branch = branchesAndTags.value.default_branch || "";
+  }
+  return true;
+}
+
 // 刷新分支列表
 async function refreshBranches(forceRefresh = true) {
   if (!buildConfig.value.sourceId) {
@@ -2185,12 +2536,10 @@ async function refreshBranches(forceRefresh = true) {
 
   refreshingBranches.value = true;
   try {
-    // 如果强制刷新，先清除缓存
     if (forceRefresh) {
       clearGitCache(source.git_url, buildConfig.value.sourceId);
     }
-    
-    // 使用缓存机制获取Git信息
+
     const data = await getGitInfoWithCache(
       async () => {
         const response = await axios.post("/api/verify-git-repo", {
@@ -2204,27 +2553,10 @@ async function refreshBranches(forceRefresh = true) {
       forceRefresh
     );
 
-    if (data && data.branches) {
-      // 更新分支和标签列表
-      branchesAndTags.value = {
-        branches: data.branches || [],
-        tags: data.tags || [],
-        default_branch: data.default_branch || null,
-      };
-
-      // 如果当前选择的分支不在新列表中，重置为默认分支
-      const currentBranch = buildConfig.value.branch;
-      if (
-        currentBranch &&
-        !branchesAndTags.value.branches.includes(currentBranch) &&
-        !branchesAndTags.value.tags.includes(currentBranch)
-      ) {
-        buildConfig.value.branch = branchesAndTags.value.default_branch ||"";
-      }
-    }
+    applyBranchesAndTags(data);
   } catch (error) {
     console.error("刷新分支列表失败:", error);
-    toastApiError(error,"刷新分支列表失败，请稍后重试");
+    toastApiError(error, "刷新分支列表失败，请稍后重试");
   } finally {
     refreshingBranches.value = false;
   }
@@ -3211,19 +3543,25 @@ function validateBeforeBuild() {
   if (!teamStore.activeTeamIdForApi) {
     return"请先在顶部选择团队，再提交构建任务";
   }
-  if (buildConfig.value.sourceType ==="file") {
+  if (buildConfig.value.sourceType === "file") {
     if (!buildConfig.value.file) {
-      return"请先选择要上传的 JAR 或压缩包文件";
+      return "请先选择要上传的 JAR 或压缩包文件";
     }
     if (!buildConfig.value.template?.trim()) {
-      return"请在步骤 2 选择 Dockerfile 模板";
+      return "请在步骤 2 选择 Dockerfile 模板";
     }
   } else {
     if (!buildConfig.value.sourceId) {
-      return"请选择 Git 数据源";
+      return "请选择 Git 数据源";
+    }
+    if (!repoVerified.value) {
+      return "请先验证并选择数据源的分支或标签";
+    }
+    if (!buildConfig.value.branch && !branchesAndTags.value.default_branch) {
+      return "请选择分支或标签";
     }
     if (!buildConfig.value.useProjectDockerfile && !buildConfig.value.template?.trim()) {
-      return"请选择模板或改用项目 Dockerfile";
+      return "请选择模板或改用项目 Dockerfile";
     }
   }
   const image = (buildConfig.value.imageName ||"").trim();
@@ -3360,7 +3698,7 @@ async function startBuild() {
       // 上传完成，关闭进度对话框
       showUploadProgressModal.value = false;
     } else {
-      // Git 源码构建
+      // Git 数据源构建
       const source = gitSources.value.find(
         (s) => s.source_id === buildConfig.value.sourceId
       );
@@ -3582,10 +3920,10 @@ async function saveBuildConfigToTask(taskId) {
     buildSteps: {
       step1:"数据源选择完成",
       step2:
-        buildConfig.value.sourceType ==="git"
-          ?"分支确认完成"
-          :"跳过（文件上传）",
-      step3:"模板选择完成",
+        buildConfig.value.sourceType === "git"
+          ? "分支确认完成"
+          : "跳过（文件上传）",
+      step3: "模板选择完成",
       step4:
         forceSingleAppMode.value || services.value.length === 0
           ?"单应用模式"
@@ -3833,6 +4171,13 @@ function getBuildModeLabel() {
   }
   return"未知";
 }
+
+watch(
+  () => newSourceForm.value.git_url,
+  () => {
+    autoFillNewSourceNameFromUrl();
+  }
+);
 
 // 监听分支变化，如果选择了使用项目 Dockerfile，重新扫描
 watch(

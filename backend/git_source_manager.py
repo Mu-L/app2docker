@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 from typing import Optional, Dict, List
 from backend.database import get_db_session, init_db
-from backend.models import GitSource
+from backend.models import GitSource, User
 from backend.crypto_utils import encrypt_password, decrypt_password
 
 # 确保数据库已初始化
@@ -22,12 +22,32 @@ class GitSourceManager:
     def __init__(self):
         self.lock = threading.RLock()
 
+    def _resolve_created_by_name(self, db, created_by: Optional[str]) -> Optional[str]:
+        if not created_by:
+            return None
+        user = db.query(User).filter(User.user_id == created_by).first()
+        return user.username if user else None
+
     def _to_dict(
-        self, source: GitSource, include_password: bool = False
+        self,
+        source: GitSource,
+        include_password: bool = False,
+        db=None,
     ) -> Optional[Dict]:
         """将数据库模型转换为字典"""
         if not source:
             return None
+
+        own_db = db is None
+        if own_db:
+            db = get_db_session()
+
+        try:
+            created_by_name = self._resolve_created_by_name(db, source.created_by)
+        finally:
+            if own_db:
+                db.close()
+                db = None
 
         result = {
             "source_id": source.source_id,
@@ -43,6 +63,9 @@ class GitSourceManager:
             "updated_at": source.updated_at.isoformat() if source.updated_at else None,
             "team_id": source.team_id,
             "created_by": source.created_by,
+            "created_by_name": created_by_name,
+            "scope": source.scope or "personal",
+            "visibility": source.visibility or "private",
         }
 
         if include_password:
@@ -95,9 +118,15 @@ class GitSourceManager:
         dockerfiles: Dict[str, str] = None,
         team_id: str = None,
         created_by: str = None,
+        scope: str = "personal",
+        visibility: str = "private",
     ) -> str:
         """创建 Git 数据源"""
         source_id = str(uuid.uuid4())
+        scope = (scope or "personal").strip().lower()
+        visibility = (visibility or "private").strip().lower()
+        if scope == "personal":
+            visibility = "private"
 
         # 加密密码（使用 AES 加密）
         encrypted_password = None
@@ -119,6 +148,8 @@ class GitSourceManager:
                 dockerfiles=dockerfiles or {},
                 team_id=team_id,
                 created_by=created_by,
+                scope=scope,
+                visibility=visibility,
             )
 
             db.add(source)
@@ -160,7 +191,9 @@ class GitSourceManager:
                 )
             
             sources = query_obj.order_by(GitSource.created_at.desc()).all()
-            result = [self._to_dict(s, include_password) for s in sources]
+            result = [
+                self._to_dict(s, include_password, db=db) for s in sources
+            ]
             
             # 限制返回结果数量（最多50条）
             if len(result) > 50:
@@ -181,6 +214,8 @@ class GitSourceManager:
         default_branch: str = None,
         username: str = None,
         password: str = None,
+        scope: str = None,
+        visibility: str = None,
     ) -> bool:
         """更新数据源配置"""
         db = get_db_session()
@@ -211,6 +246,12 @@ class GitSourceManager:
                     source.password = encrypt_password(password)
                 else:
                     source.password = None
+            if scope is not None:
+                source.scope = (scope or "personal").strip().lower()
+            if visibility is not None:
+                source.visibility = (visibility or "private").strip().lower()
+            if (source.scope or "personal") == "personal":
+                source.visibility = "private"
 
             if source.dockerfiles is None:
                 source.dockerfiles = {}
@@ -244,11 +285,90 @@ class GitSourceManager:
             db.close()
 
     def get_source_by_url(self, git_url: str) -> Optional[Dict]:
-        """通过 Git URL 获取数据源配置"""
+        """通过 Git URL 获取数据源配置（全局，兼容旧逻辑）"""
         db = get_db_session()
         try:
             source = db.query(GitSource).filter(GitSource.git_url == git_url).first()
-            return self._to_dict(source)
+            return self._to_dict(source, db=db)
+        finally:
+            db.close()
+
+    def upsert_personal_credentials(
+        self,
+        team_id: str,
+        created_by: str,
+        git_url: str,
+        username: str = None,
+        password: str = None,
+        name: str = None,
+    ) -> tuple[str, bool]:
+        """
+        创建或更新当前用户的个人数据源凭据。
+        返回 (source_id, created) — created=False 表示更新了已有记录。
+        """
+        existing = self.get_personal_source_by_url(team_id, created_by, git_url)
+        if existing:
+            self.update_source(
+                source_id=existing["source_id"],
+                username=username,
+                password=password,
+            )
+            return existing["source_id"], False
+
+        repo_name = (
+            git_url.rstrip("/").split("/")[-1].replace(".git", "") or "repo"
+        )
+        source_id = self.create_source(
+            name=name or repo_name,
+            git_url=git_url,
+            username=username,
+            password=password,
+            team_id=team_id,
+            created_by=created_by,
+            scope="personal",
+            visibility="private",
+        )
+        return source_id, True
+
+    def get_personal_source_by_url(
+        self, team_id: str, created_by: str, git_url: str
+    ) -> Optional[Dict]:
+        """同一团队 + 创建者 + URL 的个人数据源"""
+        db = get_db_session()
+        try:
+            source = (
+                db.query(GitSource)
+                .filter(
+                    GitSource.team_id == team_id,
+                    GitSource.created_by == created_by,
+                    GitSource.git_url == git_url,
+                    GitSource.scope == "personal",
+                )
+                .first()
+            )
+            return self._to_dict(source, db=db)
+        finally:
+            db.close()
+
+    def get_source_by_scope_url(
+        self,
+        team_id: str,
+        git_url: str,
+        scope: str,
+        created_by: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """按团队、URL、scope（及可选创建者）匹配数据源"""
+        db = get_db_session()
+        try:
+            query = db.query(GitSource).filter(
+                GitSource.team_id == team_id,
+                GitSource.git_url == git_url,
+                GitSource.scope == (scope or "personal").strip().lower(),
+            )
+            if created_by:
+                query = query.filter(GitSource.created_by == created_by)
+            source = query.first()
+            return self._to_dict(source, db=db)
         finally:
             db.close()
 

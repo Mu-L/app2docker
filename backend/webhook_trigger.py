@@ -3,6 +3,7 @@
 import json
 import logging
 import asyncio
+import hashlib
 from fnmatch import fnmatchcase
 from typing import Dict, Any, List, Optional
 import httpx
@@ -18,6 +19,119 @@ def normalize_branch_name(branch: Optional[str]) -> str:
     if branch.startswith("refs/heads/"):
         return branch[len("refs/heads/") :]
     return branch
+
+
+def get_webhook_event(headers: Dict[str, Any]) -> Dict[str, str]:
+    """Return normalized webhook event metadata from common Git providers."""
+    normalized_headers = {
+        str(key).lower(): str(value) for key, value in (headers or {}).items()
+    }
+    if "x-gitee-event" in normalized_headers:
+        return {"platform": "gitee", "event": normalized_headers["x-gitee-event"]}
+    if "x-gitlab-event" in normalized_headers:
+        return {"platform": "gitlab", "event": normalized_headers["x-gitlab-event"]}
+    if "x-github-event" in normalized_headers:
+        return {"platform": "github", "event": normalized_headers["x-github-event"]}
+    return {"platform": "unknown", "event": ""}
+
+
+def is_build_webhook_event(event: Optional[str]) -> bool:
+    """Allow only push-like events when a provider event header is present."""
+    if not event:
+        return True
+    normalized = str(event).strip().lower().replace("_", " ")
+    blocked_tokens = (
+        "merge",
+        "pull",
+        "note",
+        "comment",
+        "issue",
+        "review",
+        "pipeline",
+        "job",
+        "release",
+    )
+    if any(token in normalized for token in blocked_tokens):
+        return False
+    return "push" in normalized
+
+
+def extract_webhook_commit_sha(payload: Optional[dict]) -> str:
+    """Extract the commit identity used for webhook dedupe."""
+    payload = payload or {}
+    for key in ("after", "checkout_sha"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+
+    head_commit = payload.get("head_commit")
+    if isinstance(head_commit, dict) and head_commit.get("id"):
+        return str(head_commit["id"])
+
+    commits = payload.get("commits")
+    if isinstance(commits, list) and commits:
+        last_commit = commits[-1]
+        if isinstance(last_commit, dict):
+            for key in ("id", "sha"):
+                if last_commit.get(key):
+                    return str(last_commit[key])
+
+    return ""
+
+
+def get_webhook_delivery_id(headers: Dict[str, Any]) -> str:
+    """Extract provider delivery id when available."""
+    normalized_headers = {
+        str(key).lower(): str(value) for key, value in (headers or {}).items()
+    }
+    for key in (
+        "x-github-delivery",
+        "x-gitee-delivery",
+        "x-gitlab-event-uuid",
+        "x-request-id",
+    ):
+        value = normalized_headers.get(key)
+        if value:
+            return value
+    return ""
+
+
+def build_webhook_dedupe_key(
+    pipeline_id: str,
+    ref: Optional[str],
+    payload: Optional[dict],
+    headers: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Build a stable key for suppressing duplicate webhook deliveries."""
+    event_meta = get_webhook_event(headers or {})
+    commit_sha = extract_webhook_commit_sha(payload)
+    delivery_id = get_webhook_delivery_id(headers or {})
+    normalized_ref = str(ref or (payload or {}).get("ref") or "").strip()
+    payload_identity = commit_sha or delivery_id
+
+    if not payload_identity:
+        payload_body = json.dumps(payload or {}, sort_keys=True, ensure_ascii=False)
+        payload_identity = hashlib.sha256(payload_body.encode("utf-8")).hexdigest()
+
+    raw_key = "|".join(
+        [
+            str(pipeline_id or ""),
+            event_meta.get("platform", "unknown"),
+            event_meta.get("event", ""),
+            normalized_ref,
+            payload_identity,
+        ]
+    )
+    dedupe_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return {
+        "dedupe_key": dedupe_key,
+        "raw_key": raw_key,
+        "platform": event_meta.get("platform", "unknown"),
+        "event": event_meta.get("event", ""),
+        "ref": normalized_ref,
+        "commit_sha": commit_sha,
+        "delivery_id": delivery_id,
+    }
 
 
 def branch_rule_has_wildcard(rule: str) -> bool:

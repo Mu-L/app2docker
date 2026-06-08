@@ -10,7 +10,7 @@
 
 <script setup>
 defineProps({
-  /** Tailwind min-width class, e.g. min-w-[52rem] for wide tables */
-  minWidthClass: { type: String, default:"min-w-[42rem]" },
+  /** Tailwind min-width class, e.g. min-w-[48rem] for wide tables */
+  minWidthClass: { type: String, default:"min-w-[36rem]" },
 });
 </script>

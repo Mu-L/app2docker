@@ -1,5 +1,5 @@
 <template>
-  <div class="data-source-panel">
+  <div class="data-source-panel min-w-0">
 
     <PageToolbar title="Git 数据源管理" icon="database">
       <template #actions>
@@ -35,11 +35,28 @@
       <div v-for="source in sources" :key="source.source_id">
         <div class="rounded-lg border border-slate-200 bg-white shadow-sm h-full">
           <div class="border-b border-slate-200 bg-slate-50 px-4 py-3 bg-white">
-            <div class="mb-2">
-              <h5 class="text-base font-semibold text-slate-900 mb-0">
-                <strong>{{ source.name }}</strong>
-              </h5>
-              <p class="text-slate-500 mb-0 mt-1" v-if="source.description" style="font-size: 0.9rem;">
+            <div class="mb-2 min-w-0">
+              <div class="flex flex-wrap items-center gap-1.5 mb-1">
+                <h5 class="text-base font-semibold text-slate-900 mb-0">
+                  <strong>{{ source.name }}</strong>
+                </h5>
+                <Badge :variant="source.scope === 'team' ? 'info' : 'default'">
+                  {{ source.scope === 'team' ? '团队' : '个人' }}
+                </Badge>
+                <Badge
+                  v-if="source.scope === 'team'"
+                  :variant="source.visibility === 'team_public' ? 'success' : 'warning'"
+                >
+                  {{ source.visibility === 'team_public' ? '团内公开' : '授权可见' }}
+                </Badge>
+              </div>
+              <p
+                v-if="source.created_by_name"
+                class="text-slate-500 mb-0 text-xs break-words"
+              >
+                创建者：{{ source.created_by_name }}
+              </p>
+              <p class="text-slate-500 mb-0 mt-1 break-words" v-if="source.description" style="font-size: 0.9rem;">
                 {{ source.description }}
               </p>
             </div>
@@ -64,6 +81,7 @@
                 <AppIcon  name="edit" />
               </Button>
               <Button
+                v-if="source.scope === 'team' && source.visibility !== 'team_public'"
                 variant="outline"
                 size="sm"
                 class="flex-1"
@@ -169,6 +187,31 @@
                   class="flex h-9 w-full rounded-md border border-slate-200 bg-white px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
                   placeholder="数据源描述（可选）"
                 >
+              </div>
+              <div v-if="teamStore.canManageTeam" class="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label class="block text-sm font-medium text-slate-700">数据源类型</label>
+                  <select
+                    v-model="formData.scope"
+                    class="flex h-9 w-full rounded-md border border-slate-200 bg-white px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                    :disabled="!!editingSource && !teamStore.canManageTeam"
+                    @change="onScopeChange"
+                  >
+                    <option value="personal">个人</option>
+                    <option value="team">团队</option>
+                  </select>
+                  <small class="text-slate-500">个人源仅创建者可见；团队源可授权或团内公开</small>
+                </div>
+                <div v-if="formData.scope === 'team'">
+                  <label class="block text-sm font-medium text-slate-700">可见范围</label>
+                  <select
+                    v-model="formData.visibility"
+                    class="flex h-9 w-full rounded-md border border-slate-200 bg-white px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                  >
+                    <option value="private">仅授权成员</option>
+                    <option value="team_public">团内公开</option>
+                  </select>
+                </div>
               </div>
               <div class="mb-3">
                 <label class="block text-sm font-medium text-slate-700">Git 仓库地址 <span class="text-red-500">*</span></label>
@@ -644,8 +687,16 @@ const formData = ref({
   tags: [],
   default_branch: '',
   username: '',
-  password: ''
+  password: '',
+  scope: 'personal',
+  visibility: 'private',
 })
+
+function onScopeChange() {
+  if (formData.value.scope === 'personal') {
+    formData.value.visibility = 'private'
+  }
+}
 
 // 监听 Git URL 或认证信息变化，重置验证状态
 watch(() => [formData.value.git_url, formData.value.username, formData.value.password], () => {
@@ -683,7 +734,9 @@ onMounted(() => {
 async function loadSources() {
   loading.value = true
   try {
-    const res = await axios.get('/api/git-sources')
+    const teamId = teamStore.activeTeamIdForApi
+    const params = teamId ? { team_id: teamId } : {}
+    const res = await axios.get('/api/git-sources', { params })
     sources.value = res.data.sources || []
   } catch (error) {
     console.error('加载数据源列表失败:', error)
@@ -705,7 +758,9 @@ function showCreateModal() {
     default_branch: '',
     username: '',
     password: '',
-    dockerfiles: {}
+    dockerfiles: {},
+    scope: 'personal',
+    visibility: 'private',
   }
   showModal.value = true
 }
@@ -721,8 +776,10 @@ function editSource(source) {
     tags: source.tags || [],
     default_branch: source.default_branch || '',
     username: source.username || '',
-    password: source.has_password ? '******' : '',  // 不显示真实密码，显示占位符
-    dockerfiles: source.dockerfiles || {}
+    password: source.has_password ? '******' : '',
+    dockerfiles: source.dockerfiles || {},
+    scope: source.scope || 'personal',
+    visibility: source.visibility || 'private',
   }
   showModal.value = true
 }
@@ -805,21 +862,39 @@ async function saveSource() {
       ? formData.value.password 
       : (editingSource.value ? undefined : formData.value.password)
     
+    const teamId = teamStore.activeTeamIdForApi
+    if (!teamId) {
+      toastError('请先选择团队')
+      return
+    }
+
+    const scope = teamStore.canManageTeam ? formData.value.scope : 'personal'
+    const visibility =
+      scope === 'team' && teamStore.canManageTeam
+        ? formData.value.visibility
+        : 'private'
+
     if (editingSource.value) {
-      // 更新
-      await axios.put(`/api/git-sources/${editingSource.value.source_id}`, {
+      const payload = {
         name: formData.value.name,
         description: formData.value.description,
         branches: formData.value.branches,
         tags: formData.value.tags,
         default_branch: formData.value.default_branch,
         username: formData.value.username || null,
-        password: password
-      })
+        password: password,
+      }
+      if (teamStore.canManageTeam) {
+        payload.scope = scope
+        if (scope === 'team') {
+          payload.visibility = visibility
+        }
+      }
+      await axios.put(`/api/git-sources/${editingSource.value.source_id}`, payload)
       toastSuccess('数据源更新成功')
     } else {
-      // 创建新数据源（包含验证时扫描到的 Dockerfile）
-      await axios.post('/api/git-sources', {
+      const res = await axios.post('/api/git-sources', {
+        team_id: teamId,
         name: formData.value.name,
         description: formData.value.description,
         git_url: formData.value.git_url,
@@ -828,9 +903,13 @@ async function saveSource() {
         default_branch: formData.value.default_branch,
         username: formData.value.username || null,
         password: password || null,
-        dockerfiles: formData.value.dockerfiles || null
+        dockerfiles: formData.value.dockerfiles || null,
+        scope,
+        visibility,
       })
-      toastSuccess('数据源创建成功')
+      toastSuccess(
+        res.data?.source_updated ? '已更新已有个人数据源' : '数据源创建成功'
+      )
     }
     closeModal()
     loadSources()

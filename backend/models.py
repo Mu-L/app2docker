@@ -190,6 +190,8 @@ class GitSource(Base):
 
     team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=True)
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    scope = Column(String(20), default="personal")  # personal | team
+    visibility = Column(String(20), default="private")  # private | team_public
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -435,6 +437,9 @@ class MigrationTask(Base):
     error = Column(Text, default="")
     team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=True)
     created_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    approval_request_id = Column(
+        String(36), ForeignKey("team_approval_requests.request_id"), nullable=True
+    )
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -442,6 +447,36 @@ class MigrationTask(Base):
         Index("idx_migration_task_status", "status"),
         Index("idx_migration_task_team", "team_id"),
         Index("idx_migration_task_schedule", "schedule_enabled"),
+    )
+
+
+class TeamApprovalRequest(Base):
+    """Generic team approval request table."""
+
+    __tablename__ = "team_approval_requests"
+
+    request_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    team_id = Column(String(36), ForeignKey("teams.team_id"), nullable=False)
+    request_type = Column(String(80), nullable=False, default="")
+    title = Column(String(255), nullable=False, default="")
+    status = Column(String(50), default="pending")
+    requested_by = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    reviewed_by = Column(String(36), ForeignKey("users.user_id"), nullable=True)
+    review_note = Column(Text, default="")
+    payload = Column(JSON, default=dict)
+    result = Column(JSON, default=dict)
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.now)
+    reviewed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index("idx_team_approval_team", "team_id"),
+        Index("idx_team_approval_status", "status"),
+        Index("idx_team_approval_type", "request_type"),
+        Index("idx_team_approval_requested_by", "requested_by"),
     )
 
 
@@ -467,6 +502,34 @@ class PipelineTaskHistory(Base):
         Index("idx_pipeline_history_pipeline", "pipeline_id"),
         Index("idx_pipeline_history_task", "task_id"),
         Index("idx_pipeline_history_time", "triggered_at"),
+    )
+
+
+class WebhookDelivery(Base):
+    """Webhook delivery dedupe table."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key = Column(String(128), unique=True, nullable=False)
+    pipeline_id = Column(String(36), ForeignKey("pipelines.pipeline_id"), nullable=False)
+    task_id = Column(String(36), ForeignKey("tasks.task_id"), nullable=True)
+    event = Column(String(100))
+    platform = Column(String(50))
+    ref = Column(String(255))
+    commit_sha = Column(String(128))
+    delivery_id = Column(String(255))
+    status = Column(String(50), default="reserved")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    pipeline = relationship("Pipeline")
+    task = relationship("Task")
+
+    __table_args__ = (
+        Index("idx_webhook_delivery_key", "dedupe_key"),
+        Index("idx_webhook_delivery_pipeline", "pipeline_id"),
+        Index("idx_webhook_delivery_created", "created_at"),
     )
 
 

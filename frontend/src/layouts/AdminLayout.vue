@@ -463,6 +463,9 @@
             <ImageMigrationPanel
               v-if="activeTab === 'image-migration' && hasPermission('menu.migration')"
             />
+            <TeamApprovalRequestsPanel
+              v-if="activeTab === 'team-requests' && hasPermission('menu.team-requests')"
+            />
             <TemplatePanel
               v-if="activeTab === 'template' && hasPermission('menu.template')"
             />
@@ -727,6 +730,7 @@ const RoleManagement = defineAsyncComponent(() => import("@/components/RoleManag
 const StepBuildPanel = defineAsyncComponent(() => import("@/components/StepBuildPanel.vue"));
 const TaskManager = defineAsyncComponent(() => import("@/components/TaskManager.vue"));
 const TemplatePanel = defineAsyncComponent(() => import("@/components/TemplatePanel.vue"));
+const TeamApprovalRequestsPanel = defineAsyncComponent(() => import("@/components/TeamApprovalRequestsPanel.vue"));
 const TeamManagement = defineAsyncComponent(() => import("@/components/TeamManagement.vue"));
 const TeamSettings = defineAsyncComponent(() => import("@/components/team/TeamSettings.vue"));
 const UnifiedHostManager = defineAsyncComponent(() => import("@/components/UnifiedHostManager.vue"));
@@ -756,6 +760,12 @@ const SIDEBAR_GROUPS = [
         perm:"menu.migration",
         label:"镜像迁移",
         icon:"right-left",
+      },
+      {
+        id:"team-requests",
+        perm:"menu.team-requests",
+        label:"团队申请",
+        icon:"inbox",
       },
       {
         id:"tasks",
@@ -1074,6 +1084,7 @@ const pageTitle = computed(() => {
   if (route.name ==="pipeline-create") return"新建流水线";
   if (route.name ==="pipeline-detail") return"流水线配置";
   if (route.name ==="pipeline-history") return"历史构建";
+  if (activeTab.value ==="team-requests") return"团队申请";
   return PAGE_TITLES[activeTab.value] ||"App2Docker";
 });
 
