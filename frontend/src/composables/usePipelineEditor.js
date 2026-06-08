@@ -1178,28 +1178,30 @@ async function savePipeline() {
             normalized[serviceName] = {
               push: value,
               imageName: getServiceDefaultImageName(serviceName),
-              tag: formData.value.tag ||"latest",
+              tag: "",
             };
           } else if (value && typeof value ==="object") {
             // 获取最终镜像名（自定义或默认）
             const customImageName = value.imageName && value.imageName.trim();
             const finalImageName =
               customImageName || getServiceDefaultImageName(serviceName);
-            // 获取最终标签（自定义或全局）
-            const finalTag =
-              (value.tag && value.tag.trim()) || formData.value.tag ||"latest";
+            // 获取最终标签（留空表示构建时继承分支映射/全局标签）
+            const explicitTag =
+              value.tag !== undefined && value.tag !== null
+                ? String(value.tag).trim()
+                : "";
 
             normalized[serviceName] = {
               push: value.push !== undefined ? value.push : false,
               imageName: finalImageName,
-              tag: finalTag,
+              tag: explicitTag,
             };
           } else {
             // 新服务，使用默认值
             normalized[serviceName] = {
               push: false,
               imageName: getServiceDefaultImageName(serviceName),
-              tag: formData.value.tag ||"latest",
+              tag: "",
             };
           }
         });

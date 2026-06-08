@@ -362,12 +362,11 @@
                             <AppIcon  name="tags" class="text-amber-600" /> 标签
                           </label>
                           <input
-                            :value="
+                            v-model="
                               multiServiceFormData.service_push_config[
                                 serviceName
-                              ]?.tag || ''"
-                            @input="
-                              updateServiceTag(serviceName, $event.target.value)"
+                              ].tag
+                            "
                             type="text"
                             class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
                             :disabled="
