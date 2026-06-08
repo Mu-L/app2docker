@@ -920,9 +920,17 @@ const sidebarActiveTab = computed(() => {
 });
 
 // 勿将 activeTeamId 编入 key：403 时拦截器可能短暂清空团队导致整页反复重挂载；切换团队由 team-context-changed 刷新数据
-const panelContentKey = computed(
-  () => route.fullPath || `/app/${activeTab.value ||"dashboard"}`
-);
+// 流水线子路由的 query.tab 仅作 UI 状态，勿编入 key，否则切换配置 Tab 会 remount 并清空未保存表单
+const panelContentKey = computed(() => {
+  if (
+    isPipelineDetailRoute.value ||
+    isPipelineHistoryRoute.value ||
+    isPipelineCreateRoute.value
+  ) {
+    return route.path;
+  }
+  return route.fullPath || `/app/${activeTab.value ||"dashboard"}`;
+});
 
 const MOBILE_BREAKPOINT = 768;
 const isMobile = ref(

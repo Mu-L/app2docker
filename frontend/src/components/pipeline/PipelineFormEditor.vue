@@ -1105,15 +1105,6 @@
                         type="button"
                         variant="outline"
                         size="sm"
-                        @click="addLatestBranchMapping"
-                        title="将当前配置分支映射为 latest"
-                      >
-                        <AppIcon  name="star" /> 当前分支设为 latest
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
                         @click="addBranchTagMapping"
                         title="添加映射"
                       >
@@ -1128,13 +1119,8 @@
                     >
                       <div
                         v-for="(mapping, index) in formData.branch_tag_mapping"
-                        :key="index"
+                        :key="mapping._rowId ?? index"
                         class="pipeline-branch-mapping-row rounded-md border border-transparent p-1"
-                        :class="
-                          mappingHasLatest(mapping)
-                            ? 'border-amber-300 bg-amber-50'
-                            : ''
-                        "
                       >
                         <input
                           v-model="mapping.branch"
@@ -1157,13 +1143,6 @@
                             )"
                         />
                         <div class="pipeline-branch-mapping-row__action">
-                          <span
-                            v-if="mappingHasLatest(mapping)"
-                            class="inline-flex items-center rounded-md bg-amber-500 px-2 py-0.5 text-xs font-medium text-white"
-                            title="该分支会产出 latest 标签"
-                          >
-                            latest
-                          </span>
                           <Button
                             type="button"
                             variant="destructive" size="sm"
@@ -1777,8 +1756,6 @@ const formatGitUrl = editor.formatGitUrl;
 const regenerateWebhookToken = editor.regenerateWebhookToken;
 const regenerateWebhookSecret = editor.regenerateWebhookSecret;
 const addBranchTagMapping = editor.addBranchTagMapping;
-const addLatestBranchMapping = editor.addLatestBranchMapping;
-const mappingHasLatest = editor.mappingHasLatest;
 const addPostBuildWebhook = editor.addPostBuildWebhook;
 const removePostBuildWebhook = editor.removePostBuildWebhook;
 const removeBranchTagMapping = editor.removeBranchTagMapping;

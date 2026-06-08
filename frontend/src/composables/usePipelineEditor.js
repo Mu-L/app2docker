@@ -78,6 +78,70 @@ const buildConfigJsonText = ref(""); // JSON文本内容（用于CodeMirror）
 const buildConfigJsonError = ref(""); // JSON验证错误
 const dockerfileContentText = ref(""); // Dockerfile文本内容（用于CodeMirror）
 const loadingDockerfile = ref(false); // 正在从仓库加载Dockerfile
+const loadedPipelineId = ref(null); // 已加载到表单的流水线 ID，避免 remount 重复覆盖未保存输入
+
+let branchMappingRowIdSeq = 0;
+
+function createBranchTagMappingRow(branch = "", tag = "") {
+  return {
+    _rowId: ++branchMappingRowIdSeq,
+    branch,
+    tag,
+  };
+}
+
+function mapPipelineBranchTagMappingToRows(mapping) {
+  if (!mapping) {
+    return [];
+  }
+  if (Array.isArray(mapping)) {
+    return mapping.map((row) =>
+      createBranchTagMappingRow(row?.branch || "", row?.tag || "")
+    );
+  }
+  if (typeof mapping === "object") {
+    return Object.entries(mapping).map(([branch, tag]) =>
+      createBranchTagMappingRow(
+        branch,
+        Array.isArray(tag) ? tag.join(",") : String(tag ?? "")
+      )
+    );
+  }
+  return [];
+}
+
+function buildBranchTagMappingObject(rows) {
+  const result = {};
+  const seen = new Set();
+
+  for (const mapping of rows || []) {
+    const branch = String(mapping?.branch ?? "").trim();
+    const tagRaw = String(mapping?.tag ?? "").trim();
+
+    if (!branch && !tagRaw) {
+      continue;
+    }
+    if (!branch || !tagRaw) {
+      return { error: "请完整填写每条分支标签映射，或删除空行" };
+    }
+    if (seen.has(branch)) {
+      return { error: `分支标签映射分支重复：${branch}` };
+    }
+    seen.add(branch);
+
+    const tagValue = tagRaw.replace(/，/g, ",");
+    if (tagValue.includes(",")) {
+      result[branch] = tagValue
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+    } else {
+      result[branch] = tagValue;
+    }
+  }
+
+  return { mapping: result };
+}
 
 // CodeMirror 扩展配置（JSON模式，使用JavaScript模式）
 const jsonEditorExtensions = [StreamLanguage.define(javascript), oneDark];
@@ -605,6 +669,7 @@ function onDeployTaskSelected(webhook, configId) {
 function initCreateForm() {
   activeTab.value ="basic";
   editingPipeline.value = null;
+  loadedPipelineId.value = null;
   formData.value = {
     name:"",
     description:"",
@@ -720,12 +785,9 @@ function applyPipelineToForm(pipeline) {
       ? [...pipeline.webhook_allowed_branches]
       : [],
     tag_build_enabled: !!pipeline.tag_build_enabled,
-    branch_tag_mapping: pipeline.branch_tag_mapping
-      ? Object.entries(pipeline.branch_tag_mapping).map(([branch, tag]) => ({
-          branch,
-          tag: Array.isArray(tag) ? tag.join(",") : tag, // 如果是数组，转换为逗号分隔的字符串
-        }))
-      : [],
+    branch_tag_mapping: mapPipelineBranchTagMappingToRows(
+      pipeline.branch_tag_mapping
+    ),
     post_build_webhooks: (() => {
       if (
         !pipeline.post_build_webhooks ||
@@ -839,46 +901,7 @@ function addBranchTagMapping() {
   if (!formData.value.branch_tag_mapping) {
     formData.value.branch_tag_mapping = [];
   }
-  formData.value.branch_tag_mapping.push({ branch:"", tag:"" });
-}
-
-function splitTagList(tagValue) {
-  return String(tagValue || "")
-    .replace(/，/g, ",")
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-}
-
-function mappingHasLatest(mapping) {
-  return splitTagList(mapping?.tag).includes("latest");
-}
-
-function addLatestBranchMapping() {
-  if (!formData.value.branch_tag_mapping) {
-    formData.value.branch_tag_mapping = [];
-  }
-
-  const branch =
-    (formData.value.branch || branchesAndTags.value.default_branch || "").trim();
-  if (!branch) {
-    toastError("请先在 Git 配置中选择一个分支");
-    return;
-  }
-
-  const existing = formData.value.branch_tag_mapping.find(
-    (mapping) => mapping.branch === branch
-  );
-  if (existing) {
-    const tags = splitTagList(existing.tag);
-    if (!tags.includes("latest")) {
-      tags.push("latest");
-    }
-    existing.tag = tags.join(",");
-    return;
-  }
-
-  formData.value.branch_tag_mapping.push({ branch, tag:"latest" });
+  formData.value.branch_tag_mapping.push(createBranchTagMappingRow());
 }
 
 // 删除分支标签映射
@@ -941,33 +964,35 @@ const isAllBranchesSelected = computed(() => {
 
 // 根据旧配置获取新的分支策略
 function getWebhookBranchStrategy(pipeline) {
-  // 如果流水线有webhook_allowed_branches字段且不为空，说明是选择分支触发策略
+  const webhook_branch_filter = pipeline.webhook_branch_filter || false;
+  const webhook_use_push_branch = pipeline.webhook_use_push_branch !== false;
+  const has_branch_tag_mapping =
+    pipeline.branch_tag_mapping &&
+    typeof pipeline.branch_tag_mapping === "object" &&
+    !Array.isArray(pipeline.branch_tag_mapping) &&
+    Object.keys(pipeline.branch_tag_mapping).length > 0;
+
+  if (webhook_branch_filter && has_branch_tag_mapping && webhook_use_push_branch) {
+    return "select_branches";
+  }
+
   if (
     pipeline.webhook_allowed_branches &&
     Array.isArray(pipeline.webhook_allowed_branches) &&
     pipeline.webhook_allowed_branches.length > 0
   ) {
     return pipeline.webhook_use_push_branch === false
-      ?"use_configured"
-      :"use_push";
+      ? "use_configured"
+      : "select_branches";
   }
 
-  const webhook_branch_filter = pipeline.webhook_branch_filter || false;
-  const webhook_use_push_branch = pipeline.webhook_use_push_branch !== false; // 默认为true
-  const has_branch_tag_mapping =
-    pipeline.branch_tag_mapping &&
-    typeof pipeline.branch_tag_mapping === "object" &&
-    Object.keys(pipeline.branch_tag_mapping).length > 0;
-
-  if (webhook_branch_filter && has_branch_tag_mapping && webhook_use_push_branch) {
-    return"select_branches";
-  } else if (webhook_branch_filter) {
-    return"filter_match";
-  } else if (webhook_use_push_branch) {
-    return"use_push";
-  } else {
-    return"use_configured";
+  if (webhook_branch_filter) {
+    return "filter_match";
   }
+  if (webhook_use_push_branch) {
+    return "use_push";
+  }
+  return "use_configured";
 }
 
 async function savePipeline() {
@@ -978,43 +1003,29 @@ async function savePipeline() {
 
   saving.value = true;
   try {
-    // 将分支标签映射从数组转换为对象
-    // 支持一个分支对应多个标签（用逗号分隔，转换为数组）
-    const branch_tag_mapping = {};
-    if (
-      formData.value.branch_tag_mapping &&
-      formData.value.branch_tag_mapping.length > 0
-    ) {
-      formData.value.branch_tag_mapping.forEach((mapping) => {
-        if (mapping.branch && mapping.tag) {
-          // 如果标签包含逗号，转换为数组；否则保持字符串
-          const tagValue = mapping.tag.trim().replace(/，/g, ',');
-          if (tagValue.includes(",")) {
-            // 多个标签，转换为数组
-            branch_tag_mapping[mapping.branch] = tagValue
-              .split(",")
-              .map((t) => t.trim())
-              .filter((t) => t);
-          } else {
-            // 单个标签，保持字符串（向后兼容）
-            branch_tag_mapping[mapping.branch] = tagValue;
-          }
-        }
-      });
+    const mappingBuild = buildBranchTagMappingObject(
+      formData.value.branch_tag_mapping
+    );
+    if (mappingBuild.error) {
+      toastError(mappingBuild.error);
+      saving.value = false;
+      return false;
     }
+    const mappingObj = mappingBuild.mapping;
+    const webhookStrategy = formData.value.webhook_branch_strategy;
 
     // 根据分支策略设置webhook_branch_filter和webhook_use_push_branch
     let webhook_branch_filter = false;
     let webhook_use_push_branch = true;
 
-    if (formData.value.webhook_branch_strategy ==="filter_match") {
+    if (webhookStrategy === "filter_match") {
       webhook_branch_filter = true;
       webhook_use_push_branch = true;
-    } else if (formData.value.webhook_branch_strategy ==="use_push") {
+    } else if (webhookStrategy === "use_push") {
       webhook_branch_filter = false;
       webhook_use_push_branch = true;
-    } else if (formData.value.webhook_branch_strategy ==="select_branches") {
-      if (Object.keys(branch_tag_mapping).length === 0) {
+    } else if (webhookStrategy === "select_branches") {
+      if (Object.keys(mappingObj).length === 0) {
         toastError("白名单模式请至少添加一个分支标签映射");
         saving.value = false;
         return false;
@@ -1026,6 +1037,9 @@ async function savePipeline() {
       webhook_branch_filter = false;
       webhook_use_push_branch = false;
     }
+
+    const webhook_allowed_branches =
+      webhookStrategy === "select_branches" ? Object.keys(mappingObj) : [];
 
     // 确保 template 和 use_project_dockerfile 的一致性
     // 如果使用项目 Dockerfile，则清空 template
@@ -1041,9 +1055,18 @@ async function savePipeline() {
       }
     }
 
+    const {
+      branch_tag_mapping: _formBranchTagMapping,
+      webhook_branch_strategy: _webhookBranchStrategy,
+      selected_service: _selectedService,
+      trigger_schedule: _triggerSchedule,
+      webhook_allowed_branches: _formWebhookAllowedBranches,
+      ...formRest
+    } = formData.value;
+
     // 准备提交数据
     const payload = {
-      ...formData.value,
+      ...formRest,
       // 确保 use_project_dockerfile 和 template 的一致性
       use_project_dockerfile: formData.value.use_project_dockerfile,
       // 如果使用项目 Dockerfile，template 应该为空字符串
@@ -1054,9 +1077,7 @@ async function savePipeline() {
       // 将分支策略转换为旧格式（向后兼容）
       webhook_branch_filter: webhook_branch_filter,
       webhook_use_push_branch: webhook_use_push_branch,
-      // 将分支标签映射转换为对象格式
-      branch_tag_mapping:
-        Object.keys(branch_tag_mapping).length > 0 ? branch_tag_mapping : null,
+      branch_tag_mapping: mappingObj,
       // 如果未启用定时触发，则cron_expression为null
       cron_expression: formData.value.trigger_schedule
         ? formData.value.cron_expression
@@ -1210,8 +1231,7 @@ async function savePipeline() {
         formData.value.webhook_secret && formData.value.webhook_secret.trim()
           ? formData.value.webhook_secret.trim()
           : null,
-      // 分支标签映射的左侧分支即为常用的 Webhook 允许分支规则。
-      webhook_allowed_branches: null,
+      webhook_allowed_branches,
       // 构建后webhook配置
       post_build_webhooks: (() => {
         if (
@@ -1251,11 +1271,11 @@ async function savePipeline() {
     }
     // 移除webhook_branch_strategy，因为后端不需要这个字段
     delete payload.webhook_branch_strategy;
-    delete payload.selected_service; // 移除单服务字段，后端不需要
-    delete payload.trigger_schedule; // 移除前端字段
+    delete payload.selected_service;
+    delete payload.trigger_schedule;
 
     // 验证：如果启用定时触发，必须填写cron表达式
-    if (payload.trigger_schedule && !payload.cron_expression) {
+    if (formData.value.trigger_schedule && !payload.cron_expression) {
       toastError("请填写 Cron 表达式");
       saving.value = false;
       return;
@@ -1284,18 +1304,18 @@ async function savePipeline() {
     });
 
     if (editingPipeline.value) {
-      // 更新
-      await axios.put(
-        `/api/pipelines/${editingPipeline.value.pipeline_id}`,
-        payload
-      );
+      const pipelineId = editingPipeline.value.pipeline_id;
+      await axios.put(`/api/pipelines/${pipelineId}`, payload);
+      await loadPipelineForEdit(pipelineId, { force: true });
       toastSuccess("流水线更新成功");
-      if (onSaved) onSaved(editingPipeline.value.pipeline_id);
-      return editingPipeline.value.pipeline_id;
+      if (onSaved) onSaved(pipelineId);
+      return pipelineId;
     } else {
-      // 创建
       const res = await axios.post("/api/pipelines", payload);
       const newId = res.data?.pipeline_id;
+      if (newId) {
+        await loadPipelineForEdit(newId, { force: true });
+      }
       toastSuccess("流水线创建成功");
       if (onSaved) onSaved(newId);
       return newId || true;
@@ -1391,6 +1411,7 @@ async function createPipelineMinimal() {
 
 function resetFormState() {
   editingPipeline.value = null;
+  loadedPipelineId.value = null;
   services.value = [];
   loadingServices.value = false;
   servicesError.value ="";
@@ -2729,7 +2750,15 @@ function generateUUID() {
   });
 }
 
-  async function loadPipelineForEdit(pipelineId) {
+  async function loadPipelineForEdit(pipelineId, { force = false } = {}) {
+    if (
+      !force &&
+      loadedPipelineId.value === pipelineId &&
+      editingPipeline.value?.pipeline_id === pipelineId
+    ) {
+      return true;
+    }
+
     try {
       const res = await axios.get(`/api/pipelines/${pipelineId}`);
       const pipeline = res.data?.pipeline ?? res.data;
@@ -2738,6 +2767,7 @@ function generateUUID() {
         return false;
       }
       applyPipelineToForm(pipeline);
+      loadedPipelineId.value = pipelineId;
       return true;
     } catch (error) {
       console.error("加载流水线失败:", error);
@@ -2803,8 +2833,6 @@ function generateUUID() {
     loadDockerfileFromRepo,
     applyDockerfileContent,
     addBranchTagMapping,
-    addLatestBranchMapping,
-    mappingHasLatest,
     addPostBuildWebhook,
     removePostBuildWebhook,
     removeBranchTagMapping,
