@@ -175,6 +175,27 @@ class ResourcePackageManager:
         finally:
             db.close()
     
+    def update_package_size(self, package_id: str, size: int) -> bool:
+        """更新资源包文件大小与 updated_at"""
+        db = get_db_session()
+        try:
+            package = (
+                db.query(ResourcePackage)
+                .filter(ResourcePackage.package_id == package_id)
+                .first()
+            )
+            if not package:
+                return False
+            package.size = size
+            package.updated_at = datetime.now()
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def delete_package(self, package_id: str) -> bool:
         """删除资源包"""
         with self._lock:

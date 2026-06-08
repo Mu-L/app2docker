@@ -10917,11 +10917,8 @@ async def update_resource_package_content(
 
             # 更新文件大小
             new_size = len(content.encode("utf-8"))
-            metadata = manager._load_metadata()
-            if package_id in metadata:
-                metadata[package_id]["size"] = new_size
-                metadata[package_id]["updated_at"] = datetime.now().isoformat()
-                manager._save_metadata(metadata)
+            if not manager.update_package_size(package_id, new_size):
+                raise HTTPException(status_code=404, detail="资源包不存在")
 
             # 删除备份文件
             if os.path.exists(backup_path):
