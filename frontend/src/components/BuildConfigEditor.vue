@@ -732,9 +732,31 @@ function getServiceDefaultImageName(serviceName) {
   return `${prefix}/${serviceName}`
 }
 
+const DEFAULT_IMAGE_NAME = 'myapp/demo'
+
 function formatGitUrl(url) {
   if (!url) return ''
   return url.replace('https://', '').replace('http://', '').replace('.git', '')
+}
+
+function extractProjectNameFromGitUrl(gitUrl) {
+  if (!gitUrl) return null
+  try {
+    const url = gitUrl.replace(/^https?:\/\//, '').replace(/\.git$/, '')
+    const parts = url.split('/')
+    if (parts.length > 0) {
+      const projectName = parts[parts.length - 1]
+      return projectName.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+    }
+  } catch (e) {
+    console.error('提取 Git URL 项目名失败:', e)
+  }
+  return null
+}
+
+function shouldAutoFillImageName() {
+  const name = (formData.value.image_name || '').trim()
+  return !name || name === DEFAULT_IMAGE_NAME
 }
 
 function onSourceSelected() {
@@ -743,6 +765,12 @@ function onSourceSelected() {
     formData.value.git_url = source.git_url
     if (!formData.value.branch && source.default_branch) {
       formData.value.branch = source.default_branch
+    }
+    if (shouldAutoFillImageName()) {
+      const projectName = extractProjectNameFromGitUrl(source.git_url)
+      if (projectName) {
+        formData.value.image_name = projectName
+      }
     }
   }
 }

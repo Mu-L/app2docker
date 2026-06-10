@@ -9,6 +9,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { copyToClipboard } from "@/utils/clipboard.js";
 import { getDockerfilesWithCache } from "@/utils/dockerfileCache.js";
 import {
+  clearGitCache,
   getGitCache,
   getGitInfoWithCache,
   setGitCache,
@@ -201,6 +202,38 @@ async function loadGitSources() {
   }
 }
 
+const DEFAULT_IMAGE_NAME = "myapp/demo";
+
+function extractProjectNameFromGitUrl(gitUrl) {
+  if (!gitUrl) return null;
+  try {
+    const url = gitUrl.replace(/^https?:\/\//, "").replace(/\.git$/, "");
+    const parts = url.split("/");
+    if (parts.length > 0) {
+      const projectName = parts[parts.length - 1];
+      return projectName.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+    }
+  } catch (e) {
+    console.error("提取 Git URL 项目名失败:", e);
+  }
+  return null;
+}
+
+function shouldAutoFillImageName() {
+  const name = (formData.value.image_name || "").trim();
+  return !name || name === DEFAULT_IMAGE_NAME;
+}
+
+function applyProjectNameToImageName(gitUrl) {
+  if (!shouldAutoFillImageName()) {
+    return;
+  }
+  const projectName = extractProjectNameFromGitUrl(gitUrl);
+  if (projectName) {
+    formData.value.image_name = projectName;
+  }
+}
+
 async function onSourceSelected() {
   const sourceId = formData.value.source_id;
   if (!sourceId) {
@@ -217,6 +250,7 @@ async function onSourceSelected() {
   if (source) {
     formData.value.git_url = source.git_url;
     formData.value.source_id = source.source_id;
+    applyProjectNameToImageName(source.git_url);
 
     // 先尝试从缓存获取
     const cached = getGitCache(source.git_url, sourceId);
