@@ -3981,6 +3981,10 @@ async function startBuild() {
 
       building.value = false;
 
+      // 重置页面状态，防止重复提交
+      currentStep.value = 1;
+      resetBuildConfig();
+
       try {
         sessionStorage.setItem("tasksNeedRefresh","1");
         sessionStorage.setItem("highlightTaskId", taskId);
@@ -4019,6 +4023,50 @@ async function startBuild() {
     });
     building.value = false;
   }
+}
+
+function resetBuildConfig() {
+  buildConfig.value = {
+    sourceType: "git",
+    file: null,
+    sourceId: "",
+    branch: "",
+    projectType: "jar",
+    template: "",
+    useProjectDockerfile: true,
+    dockerfileName: "Dockerfile",
+    imageName: "myapp/demo",
+    tag: "latest",
+    push: false,
+    pushMode: "multi",
+    imagePrefix: "",
+    customImageName: "",
+    templateParams: {},
+    selectedServices: [],
+    selectedService: "",
+    servicePushConfig: {},
+    serviceTemplateParams: {},
+    extractArchive: true,
+  };
+  services.value = [];
+  selectedServices.value = [];
+  servicePushConfig.value = {};
+  selectedGitSourceDisplay.value = "";
+  selectedTemplateDisplay.value = "";
+  selectedRegistryDisplay.value = "";
+  templateParams.value = [];
+  branchesAndTags.value = { branches: [], tags: [], default_branch: null };
+  availableDockerfiles.value = [];
+  repoVerified.value = false;
+  forceSingleAppMode.value = false;
+  selectedResourcePackages.value = [];
+  resourcePackagePaths.value = {};
+  pushValidationResults.value = [];
+  lastPushValidationKey.value = "";
+  uploadProgress.value = 0;
+  uploadLoaded.value = 0;
+  uploadTotal.value = 0;
+  showUploadProgressModal.value = false;
 }
 
 // 保存构建配置到任务
