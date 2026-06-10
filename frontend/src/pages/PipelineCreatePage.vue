@@ -1,42 +1,74 @@
 <template>
-  <div class="pipeline-create-page">
-    <div class="pipeline-create-toolbar mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex min-w-0 items-center gap-3">
+  <div class="pipeline-create-page min-w-0">
+    <div class="pipeline-create-toolbar">
+      <div class="pipeline-create-toolbar__main">
         <Button type="button" variant="outline" size="sm" class="shrink-0" @click="goBack">
-          <AppIcon  name="arrow-left" class="mr-1" /> 返回
+          <AppIcon name="arrow-left" class="mr-1" /> 返回
         </Button>
-        <div class="min-w-0">
-          <h5 class="mb-0 text-lg font-semibold text-slate-800">新建流水线</h5>
-          <p class="mb-0 text-sm text-slate-500">填写基础信息后进入配置页完善 Dockerfile、Webhook 等</p>
+        <div class="pipeline-create-toolbar__meta min-w-0">
+          <p class="pipeline-create-toolbar__name">新建流水线</p>
+          <p class="pipeline-create-toolbar__hint">
+            先选择 Git 仓库，再填写流水线名称；创建后可继续完善 Dockerfile、Webhook 等
+          </p>
         </div>
       </div>
     </div>
 
     <StepsIndicator
+      class-name="mb-4"
       :steps="wizardSteps"
       :current-step="currentStep"
       :allow-jump-ahead="false"
       @step-click="goToStep"
     />
 
-    <div class="step-content rounded-lg border border-slate-200 bg-white">
+    <div class="step-content">
       <div v-if="currentStep === 1" class="step-panel">
-        <h5 class="mb-3">
-          <AppIcon  name="info-circle" class="text-blue-600" /> 步骤 1：基本信息
-        </h5>
-        <PipelineFormEditor section="basic" />
-      </div>
-
-      <div v-else-if="currentStep === 2" class="step-panel">
-        <h5 class="mb-3">
-          <AppIcon  name="code-branch" class="text-blue-600" /> 步骤 2：Git 仓库
+        <h5 class="step-panel__title">
+          <AppIcon name="code-branch" class="text-blue-600" /> 步骤 1：Git 仓库
         </h5>
         <PipelineCreateStepGit />
       </div>
 
+      <div v-else-if="currentStep === 2" class="step-panel">
+        <h5 class="step-panel__title">
+          <AppIcon name="info-circle" class="text-blue-600" /> 步骤 2：基本信息
+        </h5>
+
+        <div class="build-summary-card mb-4">
+          <div class="build-summary-card__header">
+            <h6 class="mb-0">
+              <AppIcon name="code-branch" class="text-blue-600" /> 已选 Git 仓库
+            </h6>
+          </div>
+          <div class="build-summary-card__body">
+            <dl class="build-summary-grid">
+              <div class="build-summary-grid__item build-summary-grid__item--full">
+                <dt class="text-xs font-medium text-slate-500">Git 仓库</dt>
+                <dd class="break-all text-sm text-slate-900">{{ summaryGitLabel }}</dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">分支</dt>
+                <dd class="text-sm text-slate-900">
+                  {{ summaryBranchLabel }}
+                </dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">Tag 构建</dt>
+                <dd class="text-sm text-slate-900">
+                  {{ formData.tag_build_enabled ? "已启用" : "未启用" }}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+
+        <PipelineFormEditor section="basic" />
+      </div>
+
       <div v-else-if="currentStep === 3" class="step-panel">
-        <h5 class="mb-3">
-          <AppIcon  name="layer-group" class="text-blue-600" /> 步骤 3：服务模式
+        <h5 class="step-panel__title">
+          <AppIcon name="layer-group" class="text-blue-600" /> 步骤 3：服务模式
         </h5>
         <p class="mb-3 text-sm text-slate-500">
           系统将根据仓库中的 Dockerfile 自动判断单应用或多阶段（多服务）构建。
@@ -45,53 +77,61 @@
       </div>
 
       <div v-else-if="currentStep === 4" class="step-panel">
-        <h5 class="mb-3">
-          <AppIcon  name="check-circle" class="text-green-600" /> 步骤 4：确认创建
+        <h5 class="step-panel__title">
+          <AppIcon name="check-circle" class="text-green-600" /> 步骤 4：确认创建
         </h5>
-        <dl class="pipeline-create-summary grid gap-3 sm:grid-cols-2">
-          <div>
-            <dt class="text-xs font-medium text-slate-500">流水线名称</dt>
-            <dd class="text-sm text-slate-900">{{ formData.name ||"—" }}</dd>
+
+        <div class="build-summary-card">
+          <div class="build-summary-card__header">
+            <h6 class="mb-0">创建摘要</h6>
           </div>
-          <div>
-            <dt class="text-xs font-medium text-slate-500">描述</dt>
-            <dd class="text-sm text-slate-900">{{ formData.description ||"（无）" }}</dd>
+          <div class="build-summary-card__body">
+            <dl class="build-summary-grid">
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">流水线名称</dt>
+                <dd class="text-sm text-slate-900">{{ formData.name || "—" }}</dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">描述</dt>
+                <dd class="text-sm text-slate-900">{{ formData.description || "（无）" }}</dd>
+              </div>
+              <div class="build-summary-grid__item build-summary-grid__item--full">
+                <dt class="text-xs font-medium text-slate-500">Git 仓库</dt>
+                <dd class="break-all text-sm text-slate-900">{{ summaryGitLabel }}</dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">分支</dt>
+                <dd class="text-sm text-slate-900">{{ summaryBranchLabel }}</dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">Tag 构建</dt>
+                <dd class="text-sm text-slate-900">
+                  {{ formData.tag_build_enabled ? "已启用" : "未启用" }}
+                </dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">Dockerfile</dt>
+                <dd class="text-sm text-slate-900">
+                  {{ formData.dockerfile_name || "Dockerfile" }}
+                </dd>
+              </div>
+              <div class="build-summary-grid__item">
+                <dt class="text-xs font-medium text-slate-500">推送模式</dt>
+                <dd class="text-sm text-slate-900">{{ pushModeSummary }}</dd>
+              </div>
+              <div
+                v-if="formData.push_mode === 'multi' && services.length"
+                class="build-summary-grid__item build-summary-grid__item--full"
+              >
+                <dt class="text-xs font-medium text-slate-500">识别到的服务</dt>
+                <dd class="text-sm text-slate-900">
+                  {{ services.map((s) => s.name).join("、") }}
+                </dd>
+              </div>
+            </dl>
           </div>
-          <div class="sm:col-span-2">
-            <dt class="text-xs font-medium text-slate-500">Git 仓库</dt>
-            <dd class="break-all text-sm text-slate-900">
-              {{ summaryGitLabel }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-slate-500">分支</dt>
-            <dd class="text-sm text-slate-900">
-              {{ formData.branch || branchesAndTags.default_branch ||"默认分支" }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-slate-500">Tag 构建</dt>
-            <dd class="text-sm text-slate-900">
-              {{ formData.tag_build_enabled ?"已启用" :"未启用" }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-slate-500">Dockerfile</dt>
-            <dd class="text-sm text-slate-900">
-              {{ formData.dockerfile_name ||"Dockerfile" }}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-xs font-medium text-slate-500">推送模式</dt>
-            <dd class="text-sm text-slate-900">{{ pushModeSummary }}</dd>
-          </div>
-          <div v-if="formData.push_mode === 'multi' && services.length" class="sm:col-span-2">
-            <dt class="text-xs font-medium text-slate-500">识别到的服务</dt>
-            <dd class="text-sm text-slate-900">
-              {{ services.map((s) => s.name).join("、") }}
-            </dd>
-          </div>
-        </dl>
+        </div>
+
         <p class="mt-4 text-sm text-slate-500">
           创建后将使用项目 Dockerfile 与默认标签 latest，可在配置页继续调整镜像、Webhook 等。
         </p>
@@ -104,10 +144,11 @@
         type="button"
         variant="outline"
         size="sm"
-        :disabled="saving || stepTransitioning"
+        class="w-full sm:w-auto"
+        :disabled="saving"
         @click="prevStep"
       >
-        <AppIcon  name="arrow-left" class="mr-1" /> 上一步
+        <AppIcon name="arrow-left" class="mr-1" /> 上一步
       </Button>
       <span v-else></span>
 
@@ -115,22 +156,23 @@
         v-if="currentStep < 4"
         type="button"
         size="sm"
-        :disabled="!canProceed || stepTransitioning"
+        class="w-full sm:w-auto"
+        :disabled="!canProceed"
         @click="nextStep"
       >
-        <AppIcon v-if="stepTransitioning"  name="spinner" class="mr-1" spin />
-        下一步 <AppIcon v-if="!stepTransitioning"  name="arrow-right" class="ml-1" />
+        下一步 <AppIcon name="arrow-right" class="ml-1" />
       </Button>
       <Button
         v-else
         type="button"
         size="sm"
+        class="w-full sm:w-auto"
         :disabled="saving"
         @click="onCreate"
       >
-        <AppIcon v-if="saving"  name="spinner" class="mr-1" spin />
-        <AppIcon v-else  name="plus" class="mr-1" />
-        {{ saving ?"创建中…" :"创建流水线" }}
+        <AppIcon v-if="saving" name="spinner" class="mr-1" spin />
+        <AppIcon v-else name="plus" class="mr-1" />
+        {{ saving ? "创建中…" : "创建流水线" }}
       </Button>
     </div>
   </div>
@@ -148,22 +190,21 @@ import { usePipelineEditor } from "@/composables/usePipelineEditor";
 
 const router = useRouter();
 const currentStep = ref(1);
-const stepTransitioning = ref(false);
 
 const wizardSteps = [
-  { num: 1, label:"基本信息" },
-  { num: 2, label:"Git 仓库" },
-  { num: 3, label:"服务模式" },
-  { num: 4, label:"确认创建" },
+  { num: 1, label: "Git 仓库" },
+  { num: 2, label: "基本信息" },
+  { num: 3, label: "服务模式" },
+  { num: 4, label: "确认创建" },
 ];
 
 const editor = usePipelineEditor({
   onSaved: (pipelineId) => {
     if (!pipelineId) return;
     router.push({
-      name:"pipeline-detail",
+      name: "pipeline-detail",
       params: { pipelineId },
-      query: { created:"1", tab:"basic" },
+      query: { created: "1", tab: "basic" },
     });
   },
 });
@@ -190,31 +231,38 @@ const summaryGitLabel = computed(() => {
     );
     if (src) return `${src.name} (${src.git_url})`;
   }
-  return formData.value.git_url?.trim() ||"—";
+  return formData.value.git_url?.trim() || "—";
 });
 
+const summaryBranchLabel = computed(
+  () =>
+    formData.value.branch ||
+    branchesAndTags.value.default_branch ||
+    "默认分支"
+);
+
 const pushModeSummary = computed(() => {
-  if (formData.value.push_mode ==="single") {
+  if (formData.value.push_mode === "single") {
     return services.value.length > 0 && wizardForceSingleMode.value
-      ?"单服务（已忽略 Dockerfile 多阶段解析）"
-      :"单服务 / 单应用";
+      ? "单服务（已忽略 Dockerfile 多阶段解析）"
+      : "单服务 / 单应用";
   }
   return `多服务（${services.value.length} 个阶段）`;
 });
 
-const canProceedStep1 = computed(() => Boolean(formData.value.name?.trim()));
-
-const canProceedStep2 = computed(
+const canProceedStep1 = computed(
   () =>
     Boolean(formData.value.source_id) ||
     Boolean(formData.value.git_url?.trim())
 );
 
+const canProceedStep2 = computed(() => Boolean(formData.value.name?.trim()));
+
 const canProceedStep3 = computed(
   () =>
     wizardServiceAnalysisDone.value &&
-    (formData.value.push_mode ==="single" ||
-      formData.value.push_mode ==="multi")
+    (formData.value.push_mode === "single" ||
+      formData.value.push_mode === "multi")
 );
 
 const canProceed = computed(() => {
@@ -233,18 +281,13 @@ function goToStep(num) {
   currentStep.value = num;
 }
 
-async function nextStep() {
-  if (!canProceed.value || currentStep.value >= 4 || stepTransitioning.value) {
+function nextStep() {
+  if (!canProceed.value || currentStep.value >= 4) {
     return;
   }
 
-  if (currentStep.value === 2) {
-    stepTransitioning.value = true;
-    try {
-      await analyzeDockerfileForWizard();
-    } finally {
-      stepTransitioning.value = false;
-    }
+  if (currentStep.value === 1) {
+    analyzeDockerfileForWizard();
   }
 
   currentStep.value += 1;
@@ -265,14 +308,3 @@ onMounted(() => {
   initCreateForm();
 });
 </script>
-
-<style scoped>
-.pipeline-create-page {
-  max-width: 56rem;
-  margin-inline: auto;
-}
-
-.pipeline-create-summary dt {
-  margin-bottom: 0.125rem;
-}
-</style>

@@ -1217,16 +1217,26 @@
               镜像仓库 <small class="text-slate-500">(可选)</small>
             </label>
             <div class="relative">
-              <div class="field-group w-full">
+              <div class="field-group w-full flex min-w-0 flex-wrap items-center gap-2">
                 <input
                   v-model="singleImageRegistryQuery"
                   type="text"
-                  class="flex h-10 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                  class="min-w-0 flex-1 flex h-10 rounded-md border border-slate-200 px-3 py-2 text-sm"
                   placeholder="搜索仓库或手动输入前缀..."
                   @input="searchRegistriesForSingleImage($event.target.value)"
                   @focus="singleImageRegistryDropdownOpen = true"
                   @blur="handleSingleImageRegistryBlur"
                 />
+                <Button
+                  v-if="singleImageRegistryQuery"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  class="min-h-11 shrink-0"
+                  @click="clearSingleImageRegistry"
+                >
+                  <AppIcon name="times" class="mr-1" /> 清除
+                </Button>
                 <span
                   v-if="singleImageRegistryLoading"
                   class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500"
@@ -1235,10 +1245,18 @@
                 </span>
               </div>
               <div
-                v-if="singleImageRegistryDropdownOpen && singleImageRegistryResults.length > 0"
+                v-if="singleImageRegistryDropdownOpen"
                 class="absolute z-50 mt-1 min-w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg show w-full"
                 style="max-height: 300px; overflow-y: auto;"
               >
+                <a
+                  href="#"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-500 hover:bg-slate-100"
+                  @mousedown.prevent="clearSingleImageRegistry"
+                >
+                  <AppIcon name="ban" />
+                  不选择仓库
+                </a>
                 <a
                   v-for="reg in singleImageRegistryResults"
                   :key="reg.name"
@@ -1256,7 +1274,7 @@
             </div>
             <div class="text-xs text-slate-500 mt-1">
               <AppIcon name="info-circle" />
-              选择仓库后将自动拼接为「仓库前缀/项目名」
+              可选：选择仓库后自动拼接为「仓库前缀/项目名」，也可点击「清除」恢复为仅项目名
             </div>
           </div>
           <div class="md:col-span-6">
@@ -4113,9 +4131,23 @@ async function loadSingleImageRegistries(query = "") {
   }
 }
 
+function clearSingleImageRegistry() {
+  singleImageRegistryQuery.value = "";
+  singleImageRegistryDropdownOpen.value = false;
+  const projectPart = getImageNameProjectPart();
+  if (projectPart) {
+    buildConfig.value.imageName = projectPart;
+  }
+}
+
 function searchRegistriesForSingleImage(query) {
   singleImageRegistryQuery.value = query;
   singleImageRegistryDropdownOpen.value = true;
+
+  if (!query || !query.trim()) {
+    clearSingleImageRegistry();
+    return;
+  }
 
   const isManualInput = !singleImageRegistryResults.value.some((reg) => {
     const prefix = reg.registry_prefix || reg.registry;
@@ -4140,8 +4172,7 @@ function searchRegistriesForSingleImage(query) {
 
 function selectRegistryForSingleImage(registry) {
   if (!registry) {
-    singleImageRegistryQuery.value = "";
-    singleImageRegistryDropdownOpen.value = false;
+    clearSingleImageRegistry();
     return;
   }
 

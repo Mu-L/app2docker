@@ -234,6 +234,20 @@ function applyProjectNameToImageName(gitUrl) {
   }
 }
 
+function shouldAutoFillPipelineName() {
+  return !(formData.value.name || "").trim();
+}
+
+function applyProjectNameToPipelineName(gitUrl) {
+  if (!shouldAutoFillPipelineName()) {
+    return;
+  }
+  const projectName = extractProjectNameFromGitUrl(gitUrl);
+  if (projectName) {
+    formData.value.name = projectName;
+  }
+}
+
 async function onSourceSelected() {
   const sourceId = formData.value.source_id;
   if (!sourceId) {
@@ -251,6 +265,7 @@ async function onSourceSelected() {
     formData.value.git_url = source.git_url;
     formData.value.source_id = source.source_id;
     applyProjectNameToImageName(source.git_url);
+    applyProjectNameToPipelineName(source.git_url);
 
     // 先尝试从缓存获取
     const cached = getGitCache(source.git_url, sourceId);
@@ -317,6 +332,8 @@ watch(
     if (!formData.value.git_url) {
       return;
     }
+
+    applyProjectNameToPipelineName(formData.value.git_url);
 
     // 查找匹配的数据源
     const source = gitSources.value.find(
