@@ -263,11 +263,29 @@ def parse_dockerfile_services(dockerfile_content: str) -> tuple:
     """
     services = []
 
-    # 需要排除的非服务阶段名称（常见的构建阶段）
-    # 注意：只排除明确的构建阶段，不要排除可能作为最终镜像的阶段
-    excluded_stages = {"builder", "build", "runtime", "deps", "dependencies"}
-    # 排除以 -builder 结尾的阶段（如 frontend-builder），但保留 -base 结尾的（如 backend-base 可能是最终镜像）
-    excluded_suffixes = ["-builder"]
+    # 需要排除的非服务阶段名称（常见的构建辅助阶段，非最终可部署服务）
+    excluded_stages = {
+        "base",
+        "builder",
+        "build",
+        "build-deps",
+        "runtime",
+        "deps",
+        "dependencies",
+        "dev",
+        "development",
+        "test",
+        "testing",
+        "compile",
+        "install",
+        "prepare",
+        "lint",
+        "vendor",
+        "assets",
+        "static",
+    }
+    # 排除以常见构建后缀结尾的阶段（如 frontend-builder、app-base）
+    excluded_suffixes = ["-builder", "-build", "-deps", "-base", "-dev", "-test"]
 
     def is_excluded_stage(stage_name: str) -> bool:
         """检查阶段名称是否应该被排除（不识别为服务）"""

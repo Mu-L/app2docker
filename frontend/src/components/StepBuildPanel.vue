@@ -1209,6 +1209,74 @@
           "
           class="grid grid-cols-1 gap-3 md:grid-cols-12 mb-3"
         >
+          <div
+            v-if="buildConfig.sourceType === 'git'"
+            class="md:col-span-12"
+          >
+            <label class="block text-sm font-medium text-slate-700">
+              镜像仓库 <small class="text-slate-500">(可选)</small>
+            </label>
+            <div class="relative">
+              <div class="field-group w-full flex min-w-0 flex-wrap items-center gap-2">
+                <input
+                  v-model="singleImageRegistryQuery"
+                  type="text"
+                  class="min-w-0 flex-1 flex h-10 rounded-md border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="搜索仓库或手动输入前缀..."
+                  @input="searchRegistriesForSingleImage($event.target.value)"
+                  @focus="singleImageRegistryDropdownOpen = true"
+                  @blur="handleSingleImageRegistryBlur"
+                />
+                <Button
+                  v-if="singleImageRegistryQuery"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  class="min-h-11 shrink-0"
+                  @click="clearSingleImageRegistry"
+                >
+                  <AppIcon name="times" class="mr-1" /> 清除
+                </Button>
+                <span
+                  v-if="singleImageRegistryLoading"
+                  class="inline-flex items-center border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500"
+                >
+                  <AppIcon name="spinner" spin />
+                </span>
+              </div>
+              <div
+                v-if="singleImageRegistryDropdownOpen"
+                class="absolute z-50 mt-1 min-w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg show w-full"
+                style="max-height: 300px; overflow-y: auto;"
+              >
+                <a
+                  href="#"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-500 hover:bg-slate-100"
+                  @mousedown.prevent="clearSingleImageRegistry"
+                >
+                  <AppIcon name="ban" />
+                  不选择仓库
+                </a>
+                <a
+                  v-for="reg in singleImageRegistryResults"
+                  :key="reg.name"
+                  href="#"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
+                  @mousedown.prevent="selectRegistryForSingleImage(reg)"
+                >
+                  <div>
+                    <strong>{{ reg.name }}</strong>
+                    <br />
+                    <small class="text-slate-500">{{ reg.registry_prefix || reg.registry }}</small>
+                  </div>
+                </a>
+              </div>
+            </div>
+            <div class="text-xs text-slate-500 mt-1">
+              <AppIcon name="info-circle" />
+              可选：选择仓库后自动拼接为「仓库前缀/项目名」，也可点击「清除」恢复为仅项目名
+            </div>
+          </div>
           <div class="md:col-span-6">
             <label class="block text-sm font-medium text-slate-700">
               镜像名称 <span class="text-red-500">*</span>
@@ -1929,6 +1997,10 @@ const registrySearchQuery = ref("");
 const registrySearchResults = ref([]);
 const registrySearchLoading = ref(false);
 const registryDropdownOpen = ref(false);
+const singleImageRegistryQuery = ref("");
+const singleImageRegistryResults = ref([]);
+const singleImageRegistryLoading = ref(false);
+const singleImageRegistryDropdownOpen = ref(false);
 const selectedRegistryDisplay = ref("");
 const batchImagePrefix = ref(""); // 批量设置镜像前缀
 const batchRegistrySearchQuery = ref("");
@@ -2481,6 +2553,7 @@ async function onSourceSelected() {
     // 更新显示文本
     selectedGitSourceDisplay.value = `${source.name} (${formatGitUrl(source.git_url)})`;
     gitSourceSearchQuery.value = selectedGitSourceDisplay.value;
+    applyProjectNameToImageName(source.git_url);
     // 先尝试从缓存获取
     const cached = getGitCache(source.git_url, source.source_id);
     if (cached) {
@@ -3209,6 +3282,53 @@ function setServiceTemplateParam(serviceName, paramName, value) {
     buildConfig.value.serviceTemplateParams[serviceName] = {};
   }
   buildConfig.value.serviceTemplateParams[serviceName][paramName] = value;
+}
+
+const DEFAULT_IMAGE_NAME = "myapp/demo";
+
+function shouldAutoFillImageName() {
+  const name = (buildConfig.value.imageName || "").trim();
+  return !name || name === DEFAULT_IMAGE_NAME;
+}
+
+function getImageNameProjectPart() {
+  const projectName = extractProjectName();
+  if (projectName) {
+    return projectName;
+  }
+  const imageName = (buildConfig.value.imageName || "").trim();
+  if (!imageName || imageName === DEFAULT_IMAGE_NAME) {
+    return null;
+  }
+  const parts = imageName.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : null;
+}
+
+function applyProjectNameToImageName(gitUrl) {
+  if (!shouldAutoFillImageName()) {
+    return;
+  }
+  const projectName = gitUrl
+    ? extractProjectNameFromGitUrl(gitUrl)
+    : extractProjectName();
+  if (!projectName) {
+    return;
+  }
+  buildConfig.value.imageName = projectName;
+  if (!buildConfig.value.imagePrefix?.trim()) {
+    buildConfig.value.imagePrefix = projectName;
+  }
+}
+
+function buildImageNameWithRegistryPrefix(prefix) {
+  const normalizedPrefix = (prefix || "").trim().replace(/\/+$/, "");
+  if (!normalizedPrefix) {
+    return;
+  }
+  const projectPart = getImageNameProjectPart();
+  buildConfig.value.imageName = projectPart
+    ? `${normalizedPrefix}/${projectPart}`
+    : normalizedPrefix;
 }
 
 // 从 Git URL 提取项目名
@@ -3996,6 +4116,78 @@ function formatBytes(bytes) {
   return Math.round((bytes / Math.pow(k, i)) * 100) / 100 +"" + sizes[i];
 }
 
+let singleImageRegistrySearchTimeout = null;
+
+async function loadSingleImageRegistries(query = "") {
+  try {
+    const params = query ? { query: query.trim() } : {};
+    const res = await axios.get("/api/registries", { params });
+    singleImageRegistryResults.value = res.data.registries || [];
+  } catch (error) {
+    console.error("加载仓库列表失败:", error);
+    singleImageRegistryResults.value = [];
+  } finally {
+    singleImageRegistryLoading.value = false;
+  }
+}
+
+function clearSingleImageRegistry() {
+  singleImageRegistryQuery.value = "";
+  singleImageRegistryDropdownOpen.value = false;
+  const projectPart = getImageNameProjectPart();
+  if (projectPart) {
+    buildConfig.value.imageName = projectPart;
+  }
+}
+
+function searchRegistriesForSingleImage(query) {
+  singleImageRegistryQuery.value = query;
+  singleImageRegistryDropdownOpen.value = true;
+
+  if (!query || !query.trim()) {
+    clearSingleImageRegistry();
+    return;
+  }
+
+  const isManualInput = !singleImageRegistryResults.value.some((reg) => {
+    const prefix = reg.registry_prefix || reg.registry;
+    return query === `${reg.name} (${prefix})` || query === prefix;
+  });
+
+  if (isManualInput && query && !query.includes("(")) {
+    buildImageNameWithRegistryPrefix(query);
+    singleImageRegistryDropdownOpen.value = false;
+    return;
+  }
+
+  if (singleImageRegistrySearchTimeout) {
+    clearTimeout(singleImageRegistrySearchTimeout);
+  }
+
+  singleImageRegistryLoading.value = true;
+  singleImageRegistrySearchTimeout = setTimeout(() => {
+    loadSingleImageRegistries(query);
+  }, 300);
+}
+
+function selectRegistryForSingleImage(registry) {
+  if (!registry) {
+    clearSingleImageRegistry();
+    return;
+  }
+
+  const prefix = registry.registry_prefix || registry.registry;
+  buildImageNameWithRegistryPrefix(prefix);
+  singleImageRegistryQuery.value = `${registry.name} (${prefix})`;
+  singleImageRegistryDropdownOpen.value = false;
+}
+
+function handleSingleImageRegistryBlur() {
+  setTimeout(() => {
+    singleImageRegistryDropdownOpen.value = false;
+  }, 200);
+}
+
 let registrySearchTimeout = null;
 async function loadRegistries(query ="") {
   try {
@@ -4200,6 +4392,7 @@ function reloadTeamScopedData() {
   loadGitSources();
   loadTemplates();
   loadRegistries();
+  loadSingleImageRegistries();
   loadBatchRegistries();
 }
 
