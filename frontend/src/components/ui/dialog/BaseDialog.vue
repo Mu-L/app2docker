@@ -20,8 +20,8 @@
 <script>
 const DEFAULT_DIALOG_Z_INDEX = 2000;
 let bodyScrollLockCount = 0;
-let savedBodyOverflow = "";
-let savedBodyPaddingRight = "";
+let savedBodyStyle = null;
+let savedScrollY = 0;
 let dialogIdSeq = 0;
 const openDialogIds = [];
 const stackListeners = new Set();
@@ -77,10 +77,23 @@ function onKeydown(e) {
 function lockBodyScroll() {
   if (typeof document ==="undefined") return;
   if (bodyScrollLockCount === 0) {
-    savedBodyOverflow = document.body.style.overflow;
-    savedBodyPaddingRight = document.body.style.paddingRight;
+    savedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    savedBodyStyle = {
+      overflow: document.body.style.overflow,
+      paddingRight: document.body.style.paddingRight,
+      position: document.body.style.position,
+      top: document.body.style.top,
+      left: document.body.style.left,
+      right: document.body.style.right,
+      width: document.body.style.width,
+    };
     const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
     document.body.style.overflow ="hidden";
+    document.body.style.position ="fixed";
+    document.body.style.top = `-${savedScrollY}px`;
+    document.body.style.left ="0";
+    document.body.style.right ="0";
+    document.body.style.width ="100%";
     if (scrollbarWidth > 0) {
       document.body.style.paddingRight = `${scrollbarWidth}px`;
     }
@@ -92,8 +105,19 @@ function unlockBodyScroll() {
   if (typeof document ==="undefined") return;
   bodyScrollLockCount = Math.max(0, bodyScrollLockCount - 1);
   if (bodyScrollLockCount === 0) {
-    document.body.style.overflow = savedBodyOverflow;
-    document.body.style.paddingRight = savedBodyPaddingRight;
+    const restoreScrollY = savedScrollY;
+    if (savedBodyStyle) {
+      document.body.style.overflow = savedBodyStyle.overflow;
+      document.body.style.paddingRight = savedBodyStyle.paddingRight;
+      document.body.style.position = savedBodyStyle.position;
+      document.body.style.top = savedBodyStyle.top;
+      document.body.style.left = savedBodyStyle.left;
+      document.body.style.right = savedBodyStyle.right;
+      document.body.style.width = savedBodyStyle.width;
+      savedBodyStyle = null;
+    }
+    savedScrollY = 0;
+    requestAnimationFrame(() => window.scrollTo(0, restoreScrollY));
   }
 }
 

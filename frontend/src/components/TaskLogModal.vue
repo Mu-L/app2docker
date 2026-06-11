@@ -212,20 +212,12 @@ function stopLogPolling() {
   }
 }
 
-function lockBodyScroll() {
-  document.body.style.overflow ="hidden";
-}
-function unlockBodyScroll() {
-  document.body.style.overflow ="";
-}
-
 function onClose(v) {
   if (!v) close();
 }
 
 function close() {
   stopLogPolling();
-  unlockBodyScroll();
   emit("update:modelValue", false);
 }
 
@@ -289,12 +281,10 @@ watch(
   () => props.modelValue,
   (newValue) => {
     if (newValue) {
-      lockBodyScroll();
       loadLogsIfNeeded();
     } else {
       stopLogPolling();
       logs.value ="";
-      unlockBodyScroll();
     }
   }
 );
@@ -325,6 +315,5 @@ watch(
 
 onUnmounted(() => {
   stopLogPolling();
-  unlockBodyScroll();
 });
 </script>
