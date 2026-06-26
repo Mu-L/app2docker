@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,6 +25,18 @@ _module_lock = threading.Lock()
 RECLAIMED_PATTERN = re.compile(
     r"Total reclaimed space:\s*(.+)", re.IGNORECASE
 )
+
+APP_CLEANUP_DIRS = [
+    "data/docker_build",
+    "data/uploads",
+    "data/exports",
+    "data/resource_packages",
+]
+APP_CLEANUP_LOG_DIR = "data/logs"
+APP_CLEANUP_SKIP_FILES = {
+    "cache_cleanup.log",
+    "operations.jsonl",
+}
 
 
 def get_disk_usage_percent(path: str = "/") -> Optional[float]:
@@ -173,6 +186,87 @@ def should_cleanup(
     return False, "skip"
 
 
+def _path_size(path: str) -> int:
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def _format_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
+
+
+def _is_orphan_build_dir(subdir_name: str) -> bool:
+    """检查 data/docker_build/ 子目录是否无对应任务（孤儿目录）。"""
+    suffix = subdir_name.rsplit("_", 1)[-1]
+    if len(suffix) < 8:
+        return True
+    from backend.database import get_db_session
+    from backend.models import Task
+
+    db = get_db_session()
+    try:
+        exists = db.query(Task).filter(Task.task_id.like(f"%{suffix}%")).first()
+        return exists is None
+    finally:
+        db.close()
+
+
+def _cleanup_app_files(max_age_days: int) -> dict:
+    """清理 App2Docker 自身产生的陈旧文件。"""
+    cutoff = time.time() - max_age_days * 86400
+    removed = 0
+    freed = 0
+
+    for dir_path in APP_CLEANUP_DIRS:
+        if not os.path.isdir(dir_path):
+            continue
+        for name in os.listdir(dir_path):
+            full = os.path.join(dir_path, name)
+            try:
+                if os.path.getmtime(full) > cutoff:
+                    continue
+                if os.path.basename(dir_path) == "docker_build" and os.path.isdir(full):
+                    if not _is_orphan_build_dir(name):
+                        continue
+                size = _path_size(full)
+                if os.path.isdir(full):
+                    shutil.rmtree(full, ignore_errors=True)
+                else:
+                    os.remove(full)
+                removed += 1
+                freed += size
+            except OSError:
+                continue
+
+    if os.path.isdir(APP_CLEANUP_LOG_DIR):
+        for name in os.listdir(APP_CLEANUP_LOG_DIR):
+            if name in APP_CLEANUP_SKIP_FILES:
+                continue
+            full = os.path.join(APP_CLEANUP_LOG_DIR, name)
+            try:
+                if os.path.getmtime(full) <= cutoff:
+                    freed += os.path.getsize(full)
+                    os.remove(full)
+                    removed += 1
+            except OSError:
+                continue
+
+    return {"removed_count": removed, "freed_bytes": freed}
+
+
 def _parse_reclaimed(stdout: str, stderr: str) -> str:
     for text in (stdout or "", stderr or ""):
         for line in text.splitlines():
@@ -316,18 +410,36 @@ def run_cache_cleanup(
         else:
             _append_log(f"🧹 开始构建缓存清理 (force={force})")
 
+        max_age_days = int(config.get("app_files_max_age_days", 3))
+        app_result = _cleanup_app_files(max_age_days)
+        if app_result["removed_count"] > 0:
+            _append_log(
+                f"📦 清理程序临时文件: 删除 {app_result['removed_count']} 项，"
+                f"释放 {_format_bytes(app_result['freed_bytes'])}"
+            )
+
         success, message = _execute_prune(config)
+        parts = []
+        if app_result["removed_count"] > 0:
+            parts.append(f"程序文件 {_format_bytes(app_result['freed_bytes'])}")
+        parts.append(message)
+        final_message = "；".join(parts)
+
         state["last_cleanup_ts"] = now
         state["last_reason"] = "forced" if force else "auto"
 
         if success:
             _apply_post_cleanup_state(config, state, now)
-            _append_log(f"✅ 构建缓存清理完成: {message}")
-            return {"success": True, "reclaimed": message, "message": message}
+            _append_log(f"✅ 构建缓存清理完成: {final_message}")
+            return {
+                "success": True,
+                "reclaimed": final_message,
+                "message": final_message,
+            }
 
-        state["last_error"] = message
+        state["last_error"] = final_message
         _save_state(state)
-        _append_log(f"⚠️ 构建缓存清理失败: {message}")
-        return {"success": False, "reclaimed": "", "message": message}
+        _append_log(f"⚠️ 构建缓存清理失败: {final_message}")
+        return {"success": False, "reclaimed": "", "message": final_message}
     finally:
         _release_lock()
