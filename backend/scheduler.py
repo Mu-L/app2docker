@@ -47,7 +47,9 @@ class PipelineScheduler:
         portainer_check_interval = 120  # 每120秒检查一次Portainer主机（使用较长的间隔，避免频繁检测）
         last_docker_refresh = 0
         docker_refresh_interval = 1800  # 每30分钟刷新一次Docker信息缓存
-        
+        last_cache_cleanup_check = 0
+        cache_cleanup_check_interval = 300  # 每5分钟检查一次磁盘
+
         while self.running:
             try:
                 self._check_pipelines()
@@ -69,6 +71,11 @@ class PipelineScheduler:
                 if current_time - last_docker_refresh >= docker_refresh_interval:
                     self._refresh_docker_info()
                     last_docker_refresh = current_time
+
+                # 磁盘监控与构建缓存清理
+                if current_time - last_cache_cleanup_check >= cache_cleanup_check_interval:
+                    self._check_disk_and_cleanup()
+                    last_cache_cleanup_check = current_time
             except Exception as e:
                 print(f"❌ 调度器执行出错: {e}")
                 import traceback
@@ -250,6 +257,42 @@ class PipelineScheduler:
             print("✅ Docker信息缓存已刷新（后台任务）")
         except Exception as e:
             print(f"⚠️ 刷新Docker信息缓存失败: {e}")
+
+    def _check_disk_and_cleanup(self):
+        """磁盘占用监控 + 定时构建缓存清理"""
+        try:
+            from backend.build_cache_cleaner import (
+                get_disk_usage_percent,
+                should_cleanup,
+                run_cache_cleanup,
+                load_cleanup_state,
+            )
+            from backend.config import load_config
+
+            config = load_config()
+            maint_cfg = config.get("maintenance", {})
+            if not maint_cfg.get("enabled", True):
+                return
+
+            disk_percent = get_disk_usage_percent()
+            if disk_percent is None:
+                return
+
+            state = load_cleanup_state()
+            need, reason = should_cleanup(disk_percent, maint_cfg, state)
+            if not need:
+                return
+
+            print(
+                f"🧹 触发构建缓存清理 (原因: {reason}, 磁盘: {disk_percent:.1f}%)"
+            )
+            result = run_cache_cleanup(force=True, config=maint_cfg)
+            if result.get("success"):
+                print(f"✅ 构建缓存清理完成: {result.get('message')}")
+            else:
+                print(f"⚠️ 构建缓存清理失败: {result.get('message')}")
+        except Exception as e:
+            print(f"⚠️ 检查磁盘/清理构建缓存失败: {e}")
 
 
 # 全局调度器实例
