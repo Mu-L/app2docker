@@ -286,7 +286,9 @@ class PipelineScheduler:
             print(
                 f"🧹 触发构建缓存清理 (原因: {reason}, 磁盘: {disk_percent:.1f}%)"
             )
-            result = run_cache_cleanup(force=True, config=maint_cfg)
+            result = run_cache_cleanup(
+                force=True, config=maint_cfg, trigger_reason=reason
+            )
             if result.get("success"):
                 print(f"✅ 构建缓存清理完成: {result.get('message')}")
             else:

@@ -29,15 +29,31 @@
 
       <StatCard title="目录统计" value="—" icon="folder" accent="slate">
         <template #footer>
-          <div class="space-y-1 text-sm text-slate-600">
+          <div class="min-w-0 space-y-1 text-sm text-slate-600">
             <div class="flex items-center gap-1.5">
-              <AppIcon  name="download" class="text-green-600" />
+              <AppIcon  name="download" class="shrink-0 text-green-600" />
               <span>{{ exportDirSize }}</span>
             </div>
             <div class="flex items-center gap-1.5">
-              <AppIcon  name="folder-open" class="text-slate-500" />
+              <AppIcon  name="folder-open" class="shrink-0 text-slate-500" />
               <span>{{ buildDirSize }}</span>
             </div>
+            <div class="break-words text-xs leading-relaxed text-slate-500">
+              <template v-if="cacheCleanupStatus?.last_cleanup">
+                上次自动清理 ·
+                {{ formatCleanupTime(cacheCleanupStatus.last_cleanup.at) }}
+                <template v-if="cacheCleanupStatus.last_cleanup.summary">
+                  · 释放 {{ cacheCleanupStatus.last_cleanup.summary }}
+                </template>
+              </template>
+              <template v-else>尚未执行自动清理</template>
+            </div>
+            <p
+              v-if="cacheCleanupStatus?.in_cooldown && cacheCleanupStatus.cooldown_until"
+              class="break-words text-xs text-amber-600"
+            >
+              冷却至 {{ formatCleanupTime(cacheCleanupStatus.cooldown_until) }}
+            </p>
           </div>
         </template>
       </StatCard>
@@ -852,6 +868,7 @@ const buildDirSize = ref("0 MB"); // 编译目录容量
 const buildDirCount = ref(0); // 编译目录数量
 const exportDirSize = ref("0 MB"); // 下载目录容量
 const exportDirCount = ref(0); // 下载目录文件数量
+const cacheCleanupStatus = ref(null);
 const saving = ref(false); // 保存中状态
 const showConfigModal = ref(false); // 任务配置JSON模态框
 const taskConfigJson = ref(""); // 任务配置JSON
@@ -1170,6 +1187,21 @@ async function loadExportDirStats() {
   }
 }
 
+async function loadCacheCleanupStatus() {
+  try {
+    const res = await axios.get("/api/maintenance/cache-cleanup/status");
+    cacheCleanupStatus.value = res.data || null;
+  } catch (err) {
+    console.error("获取自动清理状态失败:", err);
+    cacheCleanupStatus.value = null;
+  }
+}
+
+function formatCleanupTime(iso) {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+}
+
 async function loadTasks(includeStats = true) {
   loading.value = true;
   error.value = null;
@@ -1202,6 +1234,7 @@ async function loadTasks(includeStats = true) {
       await Promise.all([
         loadBuildDirStats(),
         loadExportDirStats(),
+        loadCacheCleanupStatus(),
         loadSystemQueueSettings(),
       ]);
     }

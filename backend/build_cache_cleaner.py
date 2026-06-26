@@ -161,6 +161,72 @@ def _release_lock() -> None:
             _cleanup_running = False
 
 
+def _normalize_trigger_reason(reason: Optional[str]) -> str:
+    if not reason:
+        return "manual"
+    if reason == "scheduled":
+        return "scheduled"
+    if reason.startswith("high_disk"):
+        return "high_disk"
+    return "manual"
+
+
+def _trigger_label(trigger: str) -> str:
+    return {
+        "high_disk": "磁盘达线",
+        "scheduled": "定时清理",
+        "manual": "手动触发",
+    }.get(trigger, trigger)
+
+
+def _build_last_cleanup_from_state(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ts = state.get("last_cleanup_ts")
+    if not ts:
+        return None
+
+    trigger = _normalize_trigger_reason(state.get("last_trigger"))
+    freed_bytes = int(state.get("app_files_freed_bytes") or 0)
+    summary = state.get("last_message") or state.get("last_error") or ""
+
+    return {
+        "at": datetime.fromtimestamp(float(ts)).isoformat(),
+        "success": bool(state.get("last_success", True)),
+        "trigger": trigger,
+        "trigger_label": _trigger_label(trigger),
+        "summary": summary,
+        "app_files_removed_count": int(state.get("app_files_removed_count") or 0),
+        "app_files_freed_bytes": freed_bytes,
+        "app_files_freed_display": _format_bytes(freed_bytes),
+        "disk_percent_before": state.get("disk_percent_before"),
+        "disk_percent_after": state.get("disk_percent_after")
+        if state.get("disk_percent_after") is not None
+        else state.get("last_disk_percent"),
+    }
+
+
+def get_cleanup_status() -> Dict[str, Any]:
+    """返回自动清理状态（供 API / 前端展示）。"""
+    from backend.config import load_config
+
+    maint = load_config().get("maintenance", {})
+    state = _load_state()
+    now = time.time()
+    cooldown_until = state.get("cooldown_until")
+    in_cooldown = bool(cooldown_until and now < float(cooldown_until))
+
+    return {
+        "enabled": bool(maint.get("enabled", True)),
+        "disk_percent": get_disk_usage_percent(),
+        "in_cooldown": in_cooldown,
+        "cooldown_until": (
+            datetime.fromtimestamp(float(cooldown_until)).isoformat()
+            if in_cooldown
+            else None
+        ),
+        "last_cleanup": _build_last_cleanup_from_state(state),
+    }
+
+
 def should_cleanup(
     disk_percent: float,
     config: dict,
@@ -371,14 +437,52 @@ def _apply_post_cleanup_state(config: dict, state: dict, now: float) -> None:
         state["cooldown_count"] = 0
         state.pop("cooldown_until", None)
         if post is not None:
+            state["disk_percent_after"] = post
             state["last_disk_percent"] = post
 
     _save_state(state)
 
 
+def _persist_cleanup_summary(
+    state: dict,
+    *,
+    now: float,
+    success: bool,
+    final_message: str,
+    app_result: dict,
+    pre_percent: Optional[float],
+    trigger_reason: Optional[str],
+    force: bool,
+) -> None:
+    if trigger_reason:
+        stored_trigger = trigger_reason
+    elif force:
+        stored_trigger = "manual"
+    else:
+        stored_trigger = "auto"
+
+    state.update(
+        {
+            "last_cleanup_ts": now,
+            "last_success": success,
+            "last_trigger": stored_trigger,
+            "last_message": final_message if success else None,
+            "last_error": None if success else final_message,
+            "app_files_removed_count": int(app_result.get("removed_count") or 0),
+            "app_files_freed_bytes": int(app_result.get("freed_bytes") or 0),
+            "disk_percent_before": pre_percent,
+        }
+    )
+    if success:
+        state.pop("last_error", None)
+    else:
+        state.pop("last_message", None)
+
+
 def run_cache_cleanup(
     force: bool = False,
     config: Optional[dict] = None,
+    trigger_reason: Optional[str] = None,
 ) -> dict:
     """
     执行构建缓存清理。
@@ -425,8 +529,16 @@ def run_cache_cleanup(
         parts.append(message)
         final_message = "；".join(parts)
 
-        state["last_cleanup_ts"] = now
-        state["last_reason"] = "forced" if force else "auto"
+        _persist_cleanup_summary(
+            state,
+            now=now,
+            success=success,
+            final_message=final_message,
+            app_result=app_result,
+            pre_percent=pre_percent,
+            trigger_reason=trigger_reason,
+            force=force,
+        )
 
         if success:
             _apply_post_cleanup_state(config, state, now)
@@ -437,7 +549,6 @@ def run_cache_cleanup(
                 "message": final_message,
             }
 
-        state["last_error"] = final_message
         _save_state(state)
         _append_log(f"⚠️ 构建缓存清理失败: {final_message}")
         return {"success": False, "reclaimed": "", "message": final_message}

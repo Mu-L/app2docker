@@ -4792,6 +4792,20 @@ async def get_docker_build_stats(request: Request):
         raise HTTPException(status_code=500, detail=f"获取构建目录统计失败: {str(e)}")
 
 
+@router.get("/maintenance/cache-cleanup/status")
+async def get_cache_cleanup_status(request: Request):
+    """获取自动构建缓存清理状态（含最后一次清理摘要）"""
+    require_auth(request)
+    try:
+        from backend.build_cache_cleaner import get_cleanup_status
+
+        return get_cleanup_status()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"获取自动清理状态失败: {str(e)}"
+        )
+
+
 @router.get("/exports/stats")
 async def get_exports_stats(request: Request):
     """获取 exports 目录的统计信息（容量、文件数量等）"""
