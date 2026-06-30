@@ -73,6 +73,7 @@ from backend.webhook_trigger import (
     resolve_pipeline_webhook_branch,
 )
 from backend.auth import (
+    SECRET_KEY,
     TOKEN_EXPIRE_HOURS,
     authenticate,
     clear_auth_cookie,
@@ -207,10 +208,12 @@ def require_auth(request: Request) -> str:
 
 from backend.template_parser import parse_template_variables
 from backend.handlers import parse_dockerfile_services
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 router = APIRouter()
+BUILD_TASK_LOG_SHARE_TOKEN_TYPE = "build_task_log"
+BUILD_TASK_LOG_SHARE_EXPIRE_DAYS = 7
 
 
 # === Pydantic 模型 ===
@@ -4382,6 +4385,109 @@ async def get_build_task_logs(
         manager = BuildTaskManager()
         logs = manager.get_logs(task_id)
         return PlainTextResponse(logs)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取任务日志失败: {str(e)}")
+
+
+def _create_build_task_log_share_token(
+    task_id: str,
+    user_id: str,
+    team_id: Optional[str],
+) -> tuple[str, datetime]:
+    expires_at = datetime.now() + timedelta(days=BUILD_TASK_LOG_SHARE_EXPIRE_DAYS)
+    payload = {
+        "type": BUILD_TASK_LOG_SHARE_TOKEN_TYPE,
+        "task_id": task_id,
+        "user_id": user_id,
+        "team_id": team_id,
+        "exp": expires_at,
+        "iat": datetime.now(),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256"), expires_at
+
+
+def _verify_build_task_log_share_token(token: str) -> str:
+    if not token or not token.strip():
+        raise HTTPException(status_code=401, detail="访问令牌不能为空")
+    try:
+        payload = jwt.decode(
+            token.strip(),
+            SECRET_KEY,
+            algorithms=["HS256"],
+            options={"verify_iat": False},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="日志访问链接已过期")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+
+    if payload.get("type") != BUILD_TASK_LOG_SHARE_TOKEN_TYPE:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+    task_id = payload.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+    return task_id
+
+
+@router.post("/build-tasks/{task_id}/logs/share-link")
+async def create_build_task_log_share_link(
+    task_id: str,
+    request: Request,
+    team_id: Optional[str] = Query(None, description="当前团队 ID"),
+):
+    """生成无需登录即可访问的单任务日志链接"""
+    try:
+        from backend.database import get_db_session
+
+        db = get_db_session()
+        try:
+            username = require_auth(request)
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_task_in_team(db, user_id, task_id, scoped_team_id)
+        finally:
+            db.close()
+
+        manager = BuildTaskManager()
+        task = manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        token, expires_at = _create_build_task_log_share_token(
+            task_id, user_id, scoped_team_id
+        )
+        OperationLogger.log(
+            username,
+            "create_build_task_log_share_link",
+            {"task_id": task_id, "expires_at": expires_at.isoformat()},
+        )
+        return JSONResponse(
+            {
+                "url": f"/api/public/build-task-logs?token={token}",
+                "expires_at": expires_at.isoformat(),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成日志访问链接失败: {str(e)}")
+
+
+@router.get("/public/build-task-logs")
+async def get_public_build_task_logs(
+    token: str = Query(..., description="日志访问令牌"),
+):
+    """通过公开日志令牌读取单个构建任务日志"""
+    try:
+        task_id = _verify_build_task_log_share_token(token)
+        manager = BuildTaskManager()
+        task = manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        logs = manager.get_logs(task_id)
+        return PlainTextResponse(logs or "暂无日志")
     except HTTPException:
         raise
     except Exception as e:

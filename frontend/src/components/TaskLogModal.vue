@@ -35,6 +35,11 @@
           <AppIcon v-if="downloadingLogs" name="spinner" spin />
           下载
         </Button>
+        <Button type="button" variant="outline" size="sm" :disabled="sharingLogLink || !task?.task_id" @click="copyPublicLogLink">
+          <AppIcon  name="link" />
+          <AppIcon v-if="sharingLogLink" name="spinner" spin />
+          免登录链接
+        </Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToTop">到顶</Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToBottom">到底</Button>
         <span v-if="isTaskRunning" class="text-xs text-slate-500">
@@ -113,6 +118,7 @@ const logPollingInterval = ref(null);
 const autoScroll = ref(true);
 const refreshingLogs = ref(false);
 const downloadingLogs = ref(false);
+const sharingLogLink = ref(false);
 const showTaskSummary = ref(false);
 
 const isTaskRunning = computed(() => {
@@ -220,6 +226,37 @@ function downloadLogs() {
   setTimeout(() => {
     downloadingLogs.value = false;
   }, 500);
+}
+
+async function copyPublicLogLink() {
+  if (!props.task?.task_id) {
+    toastError("任务ID不存在");
+    return;
+  }
+  if (sharingLogLink.value) return;
+
+  sharingLogLink.value = true;
+  try {
+    const res = await axios.post(
+      `/api/build-tasks/${props.task.task_id}/logs/share-link`
+    );
+    const path = res.data?.url;
+    if (!path) {
+      toastError("生成日志访问链接失败");
+      return;
+    }
+    const url = new URL(path, window.location.origin).toString();
+    const success = await copyToClipboard(url);
+    if (success) {
+      toastSuccess("免登录日志链接已复制");
+    } else {
+      toastError("复制失败，请手动复制链接");
+    }
+  } catch (err) {
+    toastApiError(err, "生成日志访问链接失败");
+  } finally {
+    sharingLogLink.value = false;
+  }
 }
 
 function startLogPolling(taskId) {
