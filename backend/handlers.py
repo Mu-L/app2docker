@@ -4604,14 +4604,19 @@ def normalize_resource_package_configs(configs) -> list:
     result = []
     for item in configs:
         if isinstance(item, dict):
-            package_id = item.get("package_id")
+            package_id = str(item.get("package_id") or "").strip()
             if not package_id:
                 print(f"⚠️ 资源包配置缺少 package_id: {item}")
                 continue
             target_path = (
                 item.get("target_path") or item.get("target_dir") or "resources"
             )
-            result.append({"package_id": package_id, "target_path": target_path})
+            result.append(
+                {
+                    "package_id": package_id,
+                    "target_path": str(target_path).strip() or "resources",
+                }
+            )
         elif isinstance(item, str) and item.strip():
             result.append({"package_id": item.strip(), "target_path": "resources"})
         else:
@@ -4643,6 +4648,9 @@ def _copy_resource_packages_to_build_context(
                 f"⚠️ 资源包配置无法解析或为空"
                 f"（原始类型: {type(resource_package_ids).__name__}）\n"
             )
+            raise RuntimeError(
+                "资源包配置无法解析，请检查 resource_package_ids / resource_package_configs"
+            )
         else:
             log("ℹ️  未配置资源包，跳过资源包复制\n")
         return
@@ -4653,8 +4661,12 @@ def _copy_resource_packages_to_build_context(
         log(f"   📋 计划复制: {config.get('package_id')} -> {target_path}\n")
 
     try:
+        from backend.database import DB_FILE
         from backend.resource_package_manager import ResourcePackageManager
+        from backend.resource_package_manager import RESOURCE_PACKAGE_DIR
 
+        log(f"   🔎 资源包数据库: {os.path.abspath(DB_FILE)}\n")
+        log(f"   🔎 资源包目录: {os.path.abspath(RESOURCE_PACKAGE_DIR)}\n")
         package_manager = ResourcePackageManager()
         copied_packages, warnings = package_manager.copy_packages_to_build_context(
             package_configs, build_context
@@ -4670,13 +4682,22 @@ def _copy_resource_packages_to_build_context(
                         "target_dir", "resources"
                     )
                     log(f"   📦 {package_id} -> {target_path}\n")
+            if len(copied_packages) != len(package_configs):
+                raise RuntimeError(
+                    f"资源包复制不完整：已复制 {len(copied_packages)}/{len(package_configs)}，"
+                    "请检查缺失资源包是否存在、团队权限及目标路径"
+                )
         else:
             log(
-                f"⚠️ 已配置 {len(package_configs)} 个资源包，但均未成功复制"
+                f"❌ 已配置 {len(package_configs)} 个资源包，但均未成功复制"
                 f"（请检查资源包是否存在、团队权限及目标路径）\n"
             )
+            raise RuntimeError(
+                f"已配置 {len(package_configs)} 个资源包，但均未成功复制"
+            )
     except Exception as e:
-        log(f"⚠️ 复制资源包失败: {str(e)}\n")
+        log(f"❌ 复制资源包失败: {str(e)}\n")
+        raise
 
 
 def _multi_mode_should_push_or_any_service(

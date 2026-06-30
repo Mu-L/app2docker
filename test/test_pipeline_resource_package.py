@@ -11,6 +11,7 @@ from backend.handlers import (
     normalize_resource_package_configs,
     pipeline_to_task_config,
 )
+from backend.app2docker_config import config_to_build_params
 from backend.resource_package_manager import RESOURCE_PACKAGE_DIR, ResourcePackageManager
 
 
@@ -36,6 +37,13 @@ def test_normalize_resource_package_configs_target_dir_legacy():
 def test_normalize_resource_package_configs_json_string():
     raw = '[{"package_id":"abc","target_path":"settings.xml"}]'
     assert normalize_resource_package_configs(raw) == [
+        {"package_id": "abc", "target_path": "settings.xml"}
+    ]
+
+
+def test_normalize_resource_package_configs_strips_values():
+    configs = [{"package_id": " abc \n", "target_path": " settings.xml "}]
+    assert normalize_resource_package_configs(configs) == [
         {"package_id": "abc", "target_path": "settings.xml"}
     ]
 
@@ -67,6 +75,22 @@ def test_pipeline_to_task_config_resource_packages():
     }
     task = pipeline_to_task_config(pipeline, trigger_source="manual")
     assert task["resource_package_ids"] == [
+        {"package_id": "pkg-1", "target_path": "settings.xml"}
+    ]
+
+
+def test_app2docker_config_extracts_resource_packages():
+    params = config_to_build_params(
+        {
+            "build": {"project_type": "jar"},
+            "image": {"name": "demo", "tag": "dev"},
+            "resource_package_ids": [
+                {"package_id": " pkg-1 ", "target_path": " settings.xml "}
+            ],
+        },
+        {"branch": "dev"},
+    )
+    assert params["resource_package_ids"] == [
         {"package_id": "pkg-1", "target_path": "settings.xml"}
     ]
 

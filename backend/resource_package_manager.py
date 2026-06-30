@@ -240,8 +240,14 @@ class ResourcePackageManager:
         warnings = []
         try:
             for config in package_configs:
-                package_id = config.get('package_id')
-                target_path_rel = config.get('target_path') or config.get('target_dir', 'resources')
+                package_id = str(config.get('package_id') or '').strip()
+                target_path_rel = (
+                    str(
+                        config.get('target_path')
+                        or config.get('target_dir', 'resources')
+                    ).strip()
+                    or 'resources'
+                )
                 
                 if not package_id:
                     warnings.append("资源包配置缺少 package_id，已跳过")

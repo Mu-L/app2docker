@@ -116,7 +116,48 @@ def config_to_build_params(config: dict, context: dict) -> dict:
         "branch": git_cfg.get("branch"),
         "selected_services": _extract_services(config),
         "service_push_config": _extract_service_push_config(config, context),
+        "resource_package_ids": _extract_resource_package_configs(config),
     }
+
+
+def _extract_resource_package_configs(config: dict) -> Optional[list]:
+    raw = (
+        config.get("resource_package_configs")
+        or config.get("resource_package_ids")
+        or config.get("resource_packages")
+    )
+    if raw is None:
+        build_cfg = config.get("build") or {}
+        raw = (
+            build_cfg.get("resource_package_configs")
+            or build_cfg.get("resource_package_ids")
+            or build_cfg.get("resource_packages")
+        )
+    if not raw:
+        return None
+    if isinstance(raw, list):
+        result = []
+        for item in raw:
+            if isinstance(item, dict):
+                package_id = str(item.get("package_id") or item.get("id") or "").strip()
+                if not package_id:
+                    continue
+                target_path = (
+                    item.get("target_path")
+                    or item.get("target_dir")
+                    or item.get("path")
+                    or "resources"
+                )
+                result.append(
+                    {
+                        "package_id": package_id,
+                        "target_path": str(target_path).strip() or "resources",
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                result.append({"package_id": item.strip(), "target_path": "resources"})
+        return result or None
+    return None
 
 
 def _extract_services(config: dict) -> Optional[list]:
