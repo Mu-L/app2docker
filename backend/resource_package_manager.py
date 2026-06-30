@@ -7,7 +7,7 @@ import os
 import shutil
 import uuid
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from backend.database import get_db_session, init_db
 from backend.models import ResourcePackage
 
@@ -230,30 +230,35 @@ class ResourcePackageManager:
         self,
         package_configs: List[Dict],
         build_context: str
-    ) -> List[str]:
-        """将资源包复制到构建上下文"""
+    ) -> Tuple[List[str], List[str]]:
+        """将资源包复制到构建上下文，返回 (已复制 package_id 列表, 警告信息列表)。"""
         if not package_configs:
-            return []
+            return [], []
         
         db = get_db_session()
+        copied_packages = []
+        warnings = []
         try:
-            copied_packages = []
-            
             for config in package_configs:
                 package_id = config.get('package_id')
                 target_path_rel = config.get('target_path') or config.get('target_dir', 'resources')
                 
                 if not package_id:
+                    warnings.append("资源包配置缺少 package_id，已跳过")
                     continue
                 
                 package = db.query(ResourcePackage).filter(ResourcePackage.package_id == package_id).first()
                 if not package:
-                    print(f"⚠️ 资源包不存在: {package_id}")
+                    msg = f"资源包不存在: {package_id}"
+                    print(f"⚠️ {msg}")
+                    warnings.append(msg)
                     continue
                 
                 package_dir = os.path.join(RESOURCE_PACKAGE_DIR, package_id)
                 if not os.path.exists(package_dir):
-                    print(f"⚠️ 资源包目录不存在: {package_dir}")
+                    msg = f"资源包目录不存在: {package_id}"
+                    print(f"⚠️ {msg}")
+                    warnings.append(msg)
                     continue
                 
                 try:
@@ -278,42 +283,107 @@ class ResourcePackageManager:
                         target_dir_abs = os.path.join(build_context, target_dir_rel)
                     os.makedirs(target_dir_abs, exist_ok=True)
                     
+                    dst_filename = target_filename or package.filename
+                    copied = False
+
                     if package.extracted:
                         extracted_path = os.path.join(package_dir, "extracted")
                         if os.path.exists(extracted_path):
-                            for item in os.listdir(extracted_path):
-                                src = os.path.join(extracted_path, item)
-                                if target_filename and os.path.isfile(src):
+                            if target_filename:
+                                matched = self._find_file_by_basename(
+                                    extracted_path, target_filename
+                                )
+                                if matched:
                                     dst = os.path.join(target_dir_abs, target_filename)
-                                    shutil.copy2(src, dst)
-                                    break
+                                    shutil.copy2(matched, dst)
+                                    copied = True
                                 else:
+                                    all_files = self._list_all_files(extracted_path)
+                                    if len(all_files) == 1:
+                                        dst = os.path.join(
+                                            target_dir_abs, target_filename
+                                        )
+                                        shutil.copy2(all_files[0], dst)
+                                        copied = True
+                                    else:
+                                        for item in os.listdir(extracted_path):
+                                            src = os.path.join(extracted_path, item)
+                                            dst = os.path.join(target_dir_abs, item)
+                                            if os.path.isdir(src):
+                                                shutil.copytree(
+                                                    src, dst, dirs_exist_ok=True
+                                                )
+                                            else:
+                                                shutil.copy2(src, dst)
+                                        copied = True
+                            else:
+                                for item in os.listdir(extracted_path):
+                                    src = os.path.join(extracted_path, item)
                                     dst = os.path.join(target_dir_abs, item)
                                     if os.path.isdir(src):
                                         shutil.copytree(src, dst, dirs_exist_ok=True)
                                     else:
                                         shutil.copy2(src, dst)
+                                copied = True
                         else:
                             original_file = os.path.join(package_dir, package.filename)
                             if os.path.exists(original_file):
                                 dst_filename = target_filename or package.filename
-                                shutil.copy2(original_file, os.path.join(target_dir_abs, dst_filename))
+                                shutil.copy2(
+                                    original_file,
+                                    os.path.join(target_dir_abs, dst_filename),
+                                )
+                                copied = True
                     else:
                         original_file = os.path.join(package_dir, package.filename)
                         if os.path.exists(original_file):
                             dst_filename = target_filename or package.filename
-                            shutil.copy2(original_file, os.path.join(target_dir_abs, dst_filename))
-                    
+                            shutil.copy2(
+                                original_file,
+                                os.path.join(target_dir_abs, dst_filename),
+                            )
+                            copied = True
+
+                    if not copied:
+                        msg = f"资源包 {package_id} 无可用文件可复制"
+                        print(f"⚠️ {msg}")
+                        warnings.append(msg)
+                        continue
+
                     copied_packages.append(package_id)
-                    final_path = os.path.join(target_dir_rel, dst_filename or package.filename).replace('\\', '/')
+                    final_path = os.path.join(
+                        target_dir_rel, dst_filename or package.filename
+                    ).replace('\\', '/')
                     if final_path.startswith('./'):
                         final_path = final_path[2:]
-                    print(f"✅ 资源包已复制到构建上下文: {package_id} ({package.filename}) -> {final_path}")
+                    print(
+                        f"✅ 资源包已复制到构建上下文: {package_id} ({package.filename}) -> {final_path}"
+                    )
                 except Exception as e:
-                    print(f"❌ 复制资源包失败 {package_id}: {e}")
+                    msg = f"复制资源包失败 {package_id}: {e}"
+                    print(f"❌ {msg}")
+                    warnings.append(msg)
                     import traceback
                     traceback.print_exc()
             
-            return copied_packages
+            return copied_packages, warnings
         finally:
             db.close()
+
+    @staticmethod
+    def _find_file_by_basename(root_dir: str, basename: str) -> Optional[str]:
+        """在目录树中按文件名查找文件。"""
+        for dirpath, _, filenames in os.walk(root_dir):
+            for fn in filenames:
+                if fn == basename:
+                    return os.path.join(dirpath, fn)
+        return None
+
+    @staticmethod
+    def _list_all_files(root_dir: str) -> List[str]:
+        """列出目录树下所有文件路径。"""
+        files = []
+        for dirpath, _, filenames in os.walk(root_dir):
+            for fn in filenames:
+                files.append(os.path.join(dirpath, fn))
+        return files

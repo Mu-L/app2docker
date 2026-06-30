@@ -2068,46 +2068,9 @@ class BuildManager:
             log(f"✅ 已生成 Dockerfile\n")
 
             # 复制资源包到构建上下文
-            if resource_package_ids:
-                try:
-                    from backend.resource_package_manager import ResourcePackageManager
-
-                    package_manager = ResourcePackageManager()
-                    # 如果 resource_package_ids 是列表，转换为配置格式
-                    if (
-                        isinstance(resource_package_ids, list)
-                        and len(resource_package_ids) > 0
-                    ):
-                        if isinstance(resource_package_ids[0], dict):
-                            # 已经是配置格式
-                            package_configs = resource_package_ids
-                        else:
-                            # 只是ID列表，使用默认目录
-                            package_configs = [
-                                {"package_id": pid, "target_dir": "resources"}
-                                for pid in resource_package_ids
-                            ]
-                        copied_packages = (
-                            package_manager.copy_packages_to_build_context(
-                                package_configs, build_context
-                            )
-                        )
-                        if copied_packages:
-                            log(
-                                f"✅ 已复制 {len(copied_packages)} 个资源包到构建上下文\n"
-                            )
-                            # 输出每个资源包的详细信息
-                            for config in package_configs:
-                                package_id = config.get("package_id")
-                                if package_id in copied_packages:
-                                    target_path = config.get(
-                                        "target_path"
-                                    ) or config.get("target_dir", "resources")
-                                    log(f"   📦 {package_id} -> {target_path}\n")
-                        else:
-                            log(f"⚠️ 资源包复制失败或资源包不存在\n")
-                except Exception as e:
-                    log(f"⚠️ 复制资源包失败: {str(e)}\n")
+            _copy_resource_packages_to_build_context(
+                resource_package_ids, build_context, log
+            )
 
             log(f"\n🚀 开始构建镜像: {full_tag}\n")
             connection_info = docker_builder.get_connection_info()
@@ -2488,7 +2451,7 @@ class BuildManager:
         service_push_config = task_config.get("service_push_config")
         service_template_params = task_config.get("service_template_params", {})
         push_mode = task_config.get("push_mode", "multi")
-        resource_package_ids = task_config.get("resource_package_ids", [])
+        resource_package_ids = get_resource_packages_from_task_config(task_config)
         pipeline_id = task_config.get("pipeline_id")
         trigger_source = task_config.get("trigger_source", "manual")
 
@@ -2550,7 +2513,7 @@ class BuildManager:
         service_push_config = task_config.get("service_push_config")
         service_template_params = task_config.get("service_template_params", {})
         push_mode = task_config.get("push_mode", "multi")
-        resource_package_ids = task_config.get("resource_package_ids", [])
+        resource_package_ids = get_resource_packages_from_task_config(task_config)
         temp_git_username = task_config.get("temp_git_username")
         temp_git_password = task_config.get("temp_git_password") or _TEMP_GIT_PASSWORD_CACHE.pop(
             task_id, None
@@ -3232,50 +3195,9 @@ class BuildManager:
                 log(f"✅ 已生成 Dockerfile\n")
 
             # 复制资源包到构建上下文
-            log(f"📦 检查资源包配置...\n")
-            if resource_package_ids:
-                log(f"📋 发现 {len(resource_package_ids)} 个资源包配置\n")
-                try:
-                    from backend.resource_package_manager import ResourcePackageManager
-
-                    package_manager = ResourcePackageManager()
-                    # 如果 resource_package_ids 是列表，转换为配置格式
-                    if (
-                        isinstance(resource_package_ids, list)
-                        and len(resource_package_ids) > 0
-                    ):
-                        if isinstance(resource_package_ids[0], dict):
-                            # 已经是配置格式
-                            package_configs = resource_package_ids
-                        else:
-                            # 只是ID列表，使用默认目录
-                            package_configs = [
-                                {"package_id": pid, "target_dir": "resources"}
-                                for pid in resource_package_ids
-                            ]
-                        copied_packages = (
-                            package_manager.copy_packages_to_build_context(
-                                package_configs, build_context
-                            )
-                        )
-                        if copied_packages:
-                            log(
-                                f"✅ 已复制 {len(copied_packages)} 个资源包到构建上下文\n"
-                            )
-                            # 输出每个资源包的详细信息
-                            for config in package_configs:
-                                package_id = config.get("package_id")
-                                if package_id in copied_packages:
-                                    target_path = config.get(
-                                        "target_path"
-                                    ) or config.get("target_dir", "resources")
-                                    log(f"   📦 {package_id} -> {target_path}\n")
-                        else:
-                            log(f"⚠️ 资源包复制失败或资源包不存在\n")
-                except Exception as e:
-                    log(f"⚠️ 复制资源包失败: {str(e)}\n")
-            else:
-                log(f"ℹ️  未配置资源包，跳过资源包复制\n")
+            _copy_resource_packages_to_build_context(
+                resource_package_ids, build_context, log
+            )
 
             # Docker API 需要相对于构建上下文的 Dockerfile 路径
             dockerfile_relative = os.path.relpath(dockerfile_path, build_context)
@@ -4663,6 +4585,100 @@ def _process_next_queued_task(pipeline_manager, pipeline_id: str):
 
 
 # ============ 任务配置JSON结构辅助函数 ============
+def normalize_resource_package_configs(configs) -> list:
+    """将资源包配置规范为 [{package_id, target_path}] 列表。"""
+    if configs is None:
+        return []
+    if isinstance(configs, str):
+        try:
+            configs = json.loads(configs)
+        except json.JSONDecodeError:
+            print(f"⚠️ 资源包配置 JSON 解析失败")
+            return []
+    if not isinstance(configs, list):
+        print(
+            f"⚠️ 资源包配置格式异常，期望 list，实际为 {type(configs).__name__}"
+        )
+        return []
+
+    result = []
+    for item in configs:
+        if isinstance(item, dict):
+            package_id = item.get("package_id")
+            if not package_id:
+                print(f"⚠️ 资源包配置缺少 package_id: {item}")
+                continue
+            target_path = (
+                item.get("target_path") or item.get("target_dir") or "resources"
+            )
+            result.append({"package_id": package_id, "target_path": target_path})
+        elif isinstance(item, str) and item.strip():
+            result.append({"package_id": item.strip(), "target_path": "resources"})
+        else:
+            print(f"⚠️ 忽略无效的资源包配置项: {item}")
+    return result
+
+
+def get_resource_packages_from_task_config(task_config: dict) -> list:
+    """从 task_config 读取资源包（兼容 resource_package_ids / resource_package_configs）。"""
+    if not task_config:
+        return []
+    raw = task_config.get("resource_package_ids")
+    if raw is None:
+        raw = task_config.get("resource_package_configs")
+    return normalize_resource_package_configs(raw)
+
+
+def _copy_resource_packages_to_build_context(
+    resource_package_ids,
+    build_context: str,
+    log,
+) -> None:
+    """将资源包复制到 Docker 构建上下文并写入任务日志。"""
+    log("📦 检查资源包配置...\n")
+    package_configs = normalize_resource_package_configs(resource_package_ids)
+    if not package_configs:
+        if resource_package_ids:
+            log(
+                f"⚠️ 资源包配置无法解析或为空"
+                f"（原始类型: {type(resource_package_ids).__name__}）\n"
+            )
+        else:
+            log("ℹ️  未配置资源包，跳过资源包复制\n")
+        return
+
+    log(f"📋 发现 {len(package_configs)} 个资源包配置\n")
+    for config in package_configs:
+        target_path = config.get("target_path") or config.get("target_dir", "resources")
+        log(f"   📋 计划复制: {config.get('package_id')} -> {target_path}\n")
+
+    try:
+        from backend.resource_package_manager import ResourcePackageManager
+
+        package_manager = ResourcePackageManager()
+        copied_packages, warnings = package_manager.copy_packages_to_build_context(
+            package_configs, build_context
+        )
+        for warning in warnings:
+            log(f"⚠️ {warning}\n")
+        if copied_packages:
+            log(f"✅ 已复制 {len(copied_packages)} 个资源包到构建上下文\n")
+            for config in package_configs:
+                package_id = config.get("package_id")
+                if package_id in copied_packages:
+                    target_path = config.get("target_path") or config.get(
+                        "target_dir", "resources"
+                    )
+                    log(f"   📦 {package_id} -> {target_path}\n")
+        else:
+            log(
+                f"⚠️ 已配置 {len(package_configs)} 个资源包，但均未成功复制"
+                f"（请检查资源包是否存在、团队权限及目标路径）\n"
+            )
+    except Exception as e:
+        log(f"⚠️ 复制资源包失败: {str(e)}\n")
+
+
 def _multi_mode_should_push_or_any_service(
     base_should_push: bool,
     selected_services: list,
@@ -4787,7 +4803,7 @@ def build_task_config(
         "service_push_config": normalized_service_push_config,
         "service_template_params": service_template_params or {},
         "push_mode": push_mode,
-        "resource_package_ids": resource_package_ids or [],
+        "resource_package_ids": normalize_resource_package_configs(resource_package_ids),
         "pipeline_id": pipeline_id,
         "trigger_source": trigger_source,
         "git_ref_type": git_ref_type or "branch",
@@ -5026,6 +5042,14 @@ def pipeline_to_task_config(
     print(f"   - service_push_config: {service_push_config}")
     print(f"   - should_push: {should_push}")
 
+    raw_resource_configs = pipeline.get("resource_package_configs")
+    if raw_resource_configs is None:
+        raw_resource_configs = pipeline.get("resource_package_ids")
+    normalized_resource_configs = normalize_resource_package_configs(
+        raw_resource_configs
+    )
+    print(f"🔍 resource_package_configs: {normalized_resource_configs}")
+
     task_config_result = build_task_config(
         git_url=pipeline.get("git_url"),
         image_name=pipeline.get("image_name") or "pipeline-build",
@@ -5043,7 +5067,7 @@ def pipeline_to_task_config(
         service_push_config=service_push_config,
         service_template_params=pipeline.get("service_template_params", {}),
         push_mode=push_mode,
-        resource_package_ids=pipeline.get("resource_package_configs", []),
+        resource_package_ids=normalized_resource_configs,
         pipeline_id=pipeline.get("pipeline_id"),
         trigger_source=trigger_source,
         git_ref_type=git_ref_type,
