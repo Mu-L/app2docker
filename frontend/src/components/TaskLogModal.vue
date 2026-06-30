@@ -30,6 +30,11 @@
         <Button type="button" variant="outline" size="sm" @click="copyLogs">
           <AppIcon  name="copy" /> 复制
         </Button>
+        <Button type="button" variant="outline" size="sm" :disabled="downloadingLogs || !task?.task_id" @click="downloadLogs">
+          <AppIcon  name="download" />
+          <AppIcon v-if="downloadingLogs" name="spinner" spin />
+          下载
+        </Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToTop">到顶</Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToBottom">到底</Button>
         <span v-if="isTaskRunning" class="text-xs text-slate-500">
@@ -90,6 +95,7 @@ import { toastSuccess, toastError, toastInfo, toastApiError } from "@/utils/noti
 import { ref, computed, watch, onUnmounted, nextTick } from "vue";
 import axios from "axios";
 import { copyToClipboard } from "../utils/clipboard.js";
+import { triggerBrowserDownload } from "@/utils/download.js";
 import FormDialog from "@/components/ui/dialog/FormDialog.vue";
 import Badge from "@/components/ui/badge/Badge.vue";
 import Button from "@/components/ui/button/Button.vue";
@@ -106,6 +112,7 @@ const logContainer = ref(null);
 const logPollingInterval = ref(null);
 const autoScroll = ref(true);
 const refreshingLogs = ref(false);
+const downloadingLogs = ref(false);
 const showTaskSummary = ref(false);
 
 const isTaskRunning = computed(() => {
@@ -174,6 +181,45 @@ function toggleAutoScroll() {
 async function copyLogs() {
   const success = await copyToClipboard(logs.value);
   success ? toastSuccess("日志已复制到剪贴板") : toastError("复制失败，请手动选择文本复制");
+}
+
+function safeFilenamePart(value, fallback) {
+  const cleaned = String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|\s]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function buildTaskLogFilename(task) {
+  const image = safeFilenamePart(task?.image, "task");
+  const tag = safeFilenamePart(task?.tag, "latest");
+  const shortId = safeFilenamePart(task?.task_id?.substring(0, 8), "unknown");
+  return `build-task-${image}-${tag}-${shortId}.log`;
+}
+
+function downloadLogs() {
+  if (!props.task?.task_id) {
+    toastError("任务ID不存在");
+    return;
+  }
+  if (downloadingLogs.value) return;
+
+  downloadingLogs.value = true;
+  try {
+    triggerBrowserDownload(
+      `/api/build-tasks/${props.task.task_id}/logs`,
+      buildTaskLogFilename(props.task)
+    );
+  } catch (err) {
+    toastApiError(err, "下载日志失败");
+    downloadingLogs.value = false;
+    return;
+  }
+  setTimeout(() => {
+    downloadingLogs.value = false;
+  }, 500);
 }
 
 function startLogPolling(taskId) {
