@@ -46,6 +46,13 @@ DEFAULT_CONFIG = {
         "ssh_key_path": "",  # SSH 私钥路径（可选）
         "ssh_key_password": "",  # SSH 私钥密码（可选）
     },
+    "maintenance": {
+        "enabled": True,
+        "disk_threshold_percent": 80,  # 磁盘占用阈值，超过即清理
+        "interval_hours": 72,  # 定时清理周期（小时），默认 3 天
+        "keep_builder_cache": False,  # False=清理全部 buildx 缓存
+        "app_files_max_age_days": 3,  # 达线/定时清理时删除超过此天数的程序临时文件
+    },
 }
 
 

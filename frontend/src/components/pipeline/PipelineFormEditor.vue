@@ -892,6 +892,15 @@
                       </Button>
                     </div>
                     <div class="p-4">
+                      <p
+                        v-if="formData.project_type === 'jar'"
+                        class="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                      >
+                        Java/Maven 构建需将
+                        <code class="break-all">settings.xml</code>
+                        放在 Docker 构建上下文根目录，目标路径请填
+                        <code>settings.xml</code>。
+                      </p>
                       <div
                         v-if="
                           formData.resource_package_configs &&
@@ -1517,6 +1526,14 @@
             ><AppIcon  name="times" /></button>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4" style="max-height: 60vh; overflow-y: auto">
+            <p
+              v-if="formData.project_type === 'jar'"
+              class="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            >
+              Maven 模板使用
+              <code class="break-all">mvn ... -s settings.xml</code>，请将目标路径设为
+              <code>settings.xml</code>。
+            </p>
             <div
               v-if="resourcePackages.length === 0"
               class="text-center py-4 text-slate-500"
@@ -1568,7 +1585,7 @@
                             $event.target.value
                           )"
                         class="flex h-9 w-full rounded-md border border-slate-200 px-3 py-1 text-sm"
-                        placeholder="resources"
+                        :placeholder="resourcePackagePathPlaceholder()"
                       />
                       <small class="text-slate-500 block mt-1">
                         <AppIcon  name="info-circle" />
@@ -1751,6 +1768,7 @@ const getResourcePackageName = editor.getResourcePackageName;
 const removeResourcePackage = editor.removeResourcePackage;
 const getResourcePackageConfig = editor.getResourcePackageConfig;
 const updateResourcePackagePath = editor.updateResourcePackagePath;
+const resourcePackagePathPlaceholder = editor.resourcePackagePathPlaceholder;
 const onDockerfileSourceChange = editor.onDockerfileSourceChange;
 const onTemplateChange = editor.onTemplateChange;
 const formatGitUrl = editor.formatGitUrl;

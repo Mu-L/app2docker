@@ -102,7 +102,7 @@
 import { toastSuccess, toastError, toastInfo, toastApiError } from "@/utils/notify";
 import { showConfirm } from "@/composables/useConfirm";
 
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { copyToClipboard } from "../utils/clipboard.js";
 import BaseDialog from "@/components/ui/dialog/BaseDialog.vue";
 import Button from "@/components/ui/button/Button.vue";
@@ -204,38 +204,20 @@ function onDialogClose(v) {
 }
 
 function close() {
-  unlockBodyScroll();
   emit("update:modelValue", false);
-}
-
-function lockBodyScroll() {
-  document.body.style.overflow ="hidden";
-}
-function unlockBodyScroll() {
-  document.body.style.overflow ="";
 }
 
 const handleShowBuildLog = () => emit("update:modelValue", true);
 const handleAddLog = (e) => addLog(e.detail.text, e.detail.level);
 
-watch(
-  () => props.modelValue,
-  (newValue) => {
-    if (newValue) lockBodyScroll();
-    else unlockBodyScroll();
-  }
-);
-
 onMounted(() => {
   window.addEventListener("show-build-log", handleShowBuildLog);
   window.addEventListener("add-log", handleAddLog);
-  if (props.modelValue) lockBodyScroll();
 });
 
 onUnmounted(() => {
   window.removeEventListener("show-build-log", handleShowBuildLog);
   window.removeEventListener("add-log", handleAddLog);
-  unlockBodyScroll();
 });
 
 defineExpose({ addLog, clearLog });

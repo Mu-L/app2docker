@@ -30,6 +30,16 @@
         <Button type="button" variant="outline" size="sm" @click="copyLogs">
           <AppIcon  name="copy" /> 复制
         </Button>
+        <Button type="button" variant="outline" size="sm" :disabled="downloadingLogs || !task?.task_id" @click="downloadLogs">
+          <AppIcon  name="download" />
+          <AppIcon v-if="downloadingLogs" name="spinner" spin />
+          下载
+        </Button>
+        <Button type="button" variant="outline" size="sm" :disabled="sharingLogLink || !task?.task_id" @click="copyPublicLogLink">
+          <AppIcon  name="link" />
+          <AppIcon v-if="sharingLogLink" name="spinner" spin />
+          免登录链接
+        </Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToTop">到顶</Button>
         <Button type="button" variant="outline" size="sm" @click="scrollToBottom">到底</Button>
         <span v-if="isTaskRunning" class="text-xs text-slate-500">
@@ -90,6 +100,7 @@ import { toastSuccess, toastError, toastInfo, toastApiError } from "@/utils/noti
 import { ref, computed, watch, onUnmounted, nextTick } from "vue";
 import axios from "axios";
 import { copyToClipboard } from "../utils/clipboard.js";
+import { triggerBrowserDownload } from "@/utils/download.js";
 import FormDialog from "@/components/ui/dialog/FormDialog.vue";
 import Badge from "@/components/ui/badge/Badge.vue";
 import Button from "@/components/ui/button/Button.vue";
@@ -106,6 +117,8 @@ const logContainer = ref(null);
 const logPollingInterval = ref(null);
 const autoScroll = ref(true);
 const refreshingLogs = ref(false);
+const downloadingLogs = ref(false);
+const sharingLogLink = ref(false);
 const showTaskSummary = ref(false);
 
 const isTaskRunning = computed(() => {
@@ -176,6 +189,76 @@ async function copyLogs() {
   success ? toastSuccess("日志已复制到剪贴板") : toastError("复制失败，请手动选择文本复制");
 }
 
+function safeFilenamePart(value, fallback) {
+  const cleaned = String(value || fallback)
+    .trim()
+    .replace(/[\\/:*?"<>|\s]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function buildTaskLogFilename(task) {
+  const image = safeFilenamePart(task?.image, "task");
+  const tag = safeFilenamePart(task?.tag, "latest");
+  const shortId = safeFilenamePart(task?.task_id?.substring(0, 8), "unknown");
+  return `build-task-${image}-${tag}-${shortId}.log`;
+}
+
+function downloadLogs() {
+  if (!props.task?.task_id) {
+    toastError("任务ID不存在");
+    return;
+  }
+  if (downloadingLogs.value) return;
+
+  downloadingLogs.value = true;
+  try {
+    triggerBrowserDownload(
+      `/api/build-tasks/${props.task.task_id}/logs`,
+      buildTaskLogFilename(props.task)
+    );
+  } catch (err) {
+    toastApiError(err, "下载日志失败");
+    downloadingLogs.value = false;
+    return;
+  }
+  setTimeout(() => {
+    downloadingLogs.value = false;
+  }, 500);
+}
+
+async function copyPublicLogLink() {
+  if (!props.task?.task_id) {
+    toastError("任务ID不存在");
+    return;
+  }
+  if (sharingLogLink.value) return;
+
+  sharingLogLink.value = true;
+  try {
+    const res = await axios.post(
+      `/api/build-tasks/${props.task.task_id}/logs/share-link`
+    );
+    const path = res.data?.url;
+    if (!path) {
+      toastError("生成日志访问链接失败");
+      return;
+    }
+    const url = new URL(path, window.location.origin).toString();
+    const success = await copyToClipboard(url);
+    if (success) {
+      toastSuccess("免登录日志链接已复制");
+    } else {
+      toastError("复制失败，请手动复制链接");
+    }
+  } catch (err) {
+    toastApiError(err, "生成日志访问链接失败");
+  } finally {
+    sharingLogLink.value = false;
+  }
+}
+
 function startLogPolling(taskId) {
   if (logPollingInterval.value) clearInterval(logPollingInterval.value);
   if (isTaskRunning.value) {
@@ -212,20 +295,12 @@ function stopLogPolling() {
   }
 }
 
-function lockBodyScroll() {
-  document.body.style.overflow ="hidden";
-}
-function unlockBodyScroll() {
-  document.body.style.overflow ="";
-}
-
 function onClose(v) {
   if (!v) close();
 }
 
 function close() {
   stopLogPolling();
-  unlockBodyScroll();
   emit("update:modelValue", false);
 }
 
@@ -289,12 +364,10 @@ watch(
   () => props.modelValue,
   (newValue) => {
     if (newValue) {
-      lockBodyScroll();
       loadLogsIfNeeded();
     } else {
       stopLogPolling();
       logs.value ="";
-      unlockBodyScroll();
     }
   }
 );
@@ -325,6 +398,5 @@ watch(
 
 onUnmounted(() => {
   stopLogPolling();
-  unlockBodyScroll();
 });
 </script>

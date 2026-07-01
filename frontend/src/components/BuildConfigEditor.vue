@@ -556,6 +556,13 @@ const filteredTemplates = computed(() => {
   return templates.value.filter(t => t.project_type === formData.value.project_type)
 })
 
+const selectedResourcePackageConfigs = computed(() => {
+  return (formData.value.resource_package_ids || []).map(packageId => ({
+    package_id: packageId,
+    target_path: formData.value.resource_package_paths[packageId] || 'resources'
+  }))
+})
+
 // 构建配置JSON
 const configJson = computed(() => {
   const config = {
@@ -584,8 +591,8 @@ const configJson = computed(() => {
       ? formData.value.service_template_params
       : undefined,
     push_mode: formData.value.push_mode || 'multi',
-    resource_package_ids: formData.value.resource_package_ids.length > 0
-      ? formData.value.resource_package_ids
+    resource_package_ids: selectedResourcePackageConfigs.value.length > 0
+      ? selectedResourcePackageConfigs.value
       : undefined,
     trigger_source: 'manual'
   }

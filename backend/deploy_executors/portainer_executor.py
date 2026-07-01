@@ -104,6 +104,80 @@ class PortainerExecutor(DeployExecutor):
             "api 错误 (504)",
         ]
         return any(k in msg for k in retryable_keywords)
+
+    async def _confirm_stack_after_retryable_error(
+        self,
+        client: PortainerClient,
+        stack_name: str,
+        selected_stack_id: Optional[str] = None,
+        update_status_callback: Optional[Callable[[str], None]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Portainer 发布请求超时后，确认远端 Stack 是否已经实际生效。"""
+        if update_status_callback:
+            update_status_callback(
+                "[Portainer] 发布请求超时，正在确认远端 Stack 是否已生效..."
+            )
+
+        last_error = None
+        for confirm_attempt in range(6):
+            if confirm_attempt > 0:
+                await asyncio.sleep(2)
+            try:
+                if selected_stack_id:
+                    stack = await asyncio.to_thread(client.get_stack, int(selected_stack_id))
+                else:
+                    stack = await asyncio.to_thread(client.get_stack_by_name, stack_name)
+                if not stack:
+                    continue
+
+                actual_stack_name = stack.get("Name") or stack_name
+                verification = await asyncio.to_thread(
+                    client.verify_stack_services,
+                    actual_stack_name,
+                    None,
+                    0,
+                )
+                if verification.get("success") or not verification.get("checked"):
+                    message = (
+                        "Stack 发布请求超时，但已确认远端 Stack 已生效"
+                        if verification.get("success")
+                        else "Stack 发布请求超时，但已确认远端 Stack 存在"
+                    )
+                    if update_status_callback:
+                        update_status_callback(
+                            f"[Portainer] 超时后确认成功: {verification.get('message') or actual_stack_name}"
+                        )
+                    return {
+                        "success": True,
+                        "message": message,
+                        "stack_id": stack.get("Id") or stack.get("ID") or selected_stack_id,
+                        "stack_name": actual_stack_name,
+                        "timeout_recovered": True,
+                        "verification": verification,
+                        "host_type": "portainer",
+                        "deploy_method": "portainer_api",
+                    }
+
+                last_error = verification.get("message") or "Stack 服务校验失败"
+                if update_status_callback and confirm_attempt == 0:
+                    update_status_callback(
+                        f"[Portainer] Stack 已找到，但服务尚未通过校验: {last_error}"
+                    )
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "Portainer timeout recovery check failed: stack=%s, attempt=%s, error=%s",
+                    stack_name,
+                    confirm_attempt + 1,
+                    exc,
+                )
+
+        logger.warning(
+            "Portainer timeout recovery did not confirm stack success: stack=%s, error=%s",
+            stack_name,
+            last_error,
+        )
+        return None
     
     async def execute(
         self,
@@ -325,11 +399,50 @@ class PortainerExecutor(DeployExecutor):
                             int(result.get("revision_service_count") or 0),
                         )
                         logger.info(f"Docker Compose 部署结果: {result}")
+                        if result.get("success"):
+                            break
+
+                        last_error = result.get("message") or "Stack 部署失败"
+                        if self._is_retryable_error(last_error):
+                            confirmed = await self._confirm_stack_after_retryable_error(
+                                client,
+                                stack_name,
+                                selected_stack_id
+                                if stack_strategy == "update_existing"
+                                else None,
+                                update_status_callback,
+                            )
+                            if confirmed:
+                                result = confirmed
+                                break
+                            if attempt < max_retries - 1:
+                                logger.warning(
+                                    f"Stack 部署返回可重试失败（尝试 {attempt + 1}/{max_retries}）: {last_error}"
+                                )
+                                continue
+                            result = {
+                                "success": False,
+                                "message": f"Stack 部署失败：连接超时/网络抖动（已重试 {max_retries} 次），请检查 Portainer 稳定性后重试"
+                            }
+                            break
+
+                        logger.error(f"[Portainer] Stack 部署失败（不可重试的返回）: {last_error}")
                         break
                         
                     except Exception as e:
                         last_error = str(e)
                         if self._is_retryable_error(last_error):
+                            confirmed = await self._confirm_stack_after_retryable_error(
+                                client,
+                                stack_name,
+                                selected_stack_id
+                                if stack_strategy == "update_existing"
+                                else None,
+                                update_status_callback,
+                            )
+                            if confirmed:
+                                result = confirmed
+                                break
                             if attempt < max_retries - 1:
                                 logger.warning(
                                     f"Stack 部署出现可重试异常（尝试 {attempt + 1}/{max_retries}）: {e}"

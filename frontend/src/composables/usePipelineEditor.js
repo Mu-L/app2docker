@@ -2473,6 +2473,19 @@ function anyServicePushEnabled(servicePushConfig) {
   );
 }
 
+/** Java/Maven 等资源包默认目标路径 */
+function defaultResourcePackageTargetPath(pkg) {
+  const name = (pkg?.name || "").toLowerCase();
+  if (formData.value.project_type === "jar" && name.includes("settings")) {
+    return "settings.xml";
+  }
+  return pkg?.name || "resources";
+}
+
+function resourcePackagePathPlaceholder() {
+  return formData.value.project_type === "jar" ? "settings.xml" : "resources";
+}
+
 // 加载资源包列表
 async function loadResourcePackages() {
   try {
@@ -2480,19 +2493,13 @@ async function loadResourcePackages() {
     resourcePackages.value = res.data.packages || [];
 
     // 编辑模式下：确保已保存的资源包配置中的 target_path 有默认值
-    // 如果某个已保存的资源包配置没有 target_path 或为空，使用资源包名称作为默认值（与分步构建一致）
     if (editingPipeline.value && formData.value.resource_package_configs) {
       formData.value.resource_package_configs.forEach((config) => {
         if (!config.target_path || config.target_path.trim() ==="") {
           const pkg = resourcePackages.value.find(
             (p) => p.package_id === config.package_id
           );
-          if (pkg && pkg.name) {
-            // 如果路径为空，使用资源包名称（与分步构建一致）
-            config.target_path = pkg.name;
-          } else {
-            config.target_path ="resources";
-          }
+          config.target_path = defaultResourcePackageTargetPath(pkg);
         }
       });
     }
@@ -2528,11 +2535,10 @@ function toggleResourcePackage(pkg) {
     // 取消选择：移除配置
     formData.value.resource_package_configs.splice(index, 1);
   } else {
-    // 选择：添加配置，使用默认路径（资源包名称，与分步构建一致）
-    const defaultPath = pkg.name ||"resources";
+    const defaultPath = defaultResourcePackageTargetPath(pkg);
     formData.value.resource_package_configs.push({
       package_id: pkg.package_id,
-      target_path: defaultPath, // 默认使用资源包名称作为路径，与分步构建一致
+      target_path: defaultPath,
     });
   }
 }
@@ -2550,7 +2556,7 @@ function getResourcePackageConfig(packageId) {
     // 这里返回一个临时对象，但不添加到列表中（由 toggleResourcePackage 处理）
     return {
       package_id: packageId,
-      target_path: pkg ? pkg.name ||"resources" :"resources", // 默认使用资源包名称作为路径
+      target_path: defaultResourcePackageTargetPath(pkg),
     };
   }
   return config;
@@ -2926,6 +2932,7 @@ function generateUUID() {
     toggleResourcePackage,
     isResourcePackageSelected,
     getResourcePackageName,
+    resourcePackagePathPlaceholder,
     removeResourcePackage,
     getResourcePackageConfig,
     updateResourcePackagePath,

@@ -73,6 +73,7 @@ from backend.webhook_trigger import (
     resolve_pipeline_webhook_branch,
 )
 from backend.auth import (
+    SECRET_KEY,
     TOKEN_EXPIRE_HOURS,
     authenticate,
     clear_auth_cookie,
@@ -207,10 +208,12 @@ def require_auth(request: Request) -> str:
 
 from backend.template_parser import parse_template_variables
 from backend.handlers import parse_dockerfile_services
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 router = APIRouter()
+BUILD_TASK_LOG_SHARE_TOKEN_TYPE = "build_task_log"
+BUILD_TASK_LOG_SHARE_EXPIRE_DAYS = 7
 
 
 # === Pydantic 模型 ===
@@ -3074,10 +3077,82 @@ async def verify_git_repo(
     ),
 ):
     """验证 Git 仓库并获取分支和标签列表"""
+    import base64
     import subprocess
-    import tempfile
-    import shutil
-    from urllib.parse import urlparse, urlunparse, quote
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    def _split_git_url_auth(url: str) -> tuple[str, Optional[str], Optional[str]]:
+        """Return URL without inline credentials plus credentials found in the URL."""
+        parsed = urlparse(url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or "@" not in parsed.netloc
+        ):
+            return url, None, None
+
+        userinfo, host = parsed.netloc.rsplit("@", 1)
+        url_username = userinfo
+        url_password = None
+        if ":" in userinfo:
+            url_username, url_password = userinfo.split(":", 1)
+
+        clean_url = urlunparse(
+            (
+                parsed.scheme,
+                host,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+        return clean_url, unquote(url_username), unquote(url_password or "")
+
+    def _build_git_env(git_username: Optional[str], git_password: Optional[str]) -> dict:
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GCM_INTERACTIVE"] = "Never"
+
+        git_config = [("credential.helper", "")]
+        if git_username and git_password:
+            auth_value = f"{git_username}:{git_password}".encode("utf-8")
+            basic_token = base64.b64encode(auth_value).decode("ascii")
+            git_config.append(
+                ("http.extraHeader", f"Authorization: Basic {basic_token}")
+            )
+
+        env["GIT_CONFIG_COUNT"] = str(len(git_config))
+        for index, (key, value) in enumerate(git_config):
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
+        return env
+
+    def _git_access_denied(error_msg: str) -> bool:
+        lower_msg = error_msg.lower()
+        denied_markers = (
+            "authentication failed",
+            "permission denied",
+            "could not read username",
+            "invalid credentials",
+            "access denied",
+            "authorization failed",
+            "returned error: 401",
+            "returned error: 403",
+            "the requested url returned error: 403",
+        )
+        return any(marker in lower_msg for marker in denied_markers)
+
+    def _git_auth_detail(error_msg: str) -> str:
+        message = (
+            "仓库访问被拒绝，请检查 Git URL、账号权限和认证信息。"
+            "如果是 Gitea 25.x 私有仓库，建议使用具备仓库读取权限的 Personal Access Token "
+            "作为密码/token，并填写该 token 所属用户名；开启 MFA/OAuth/LDAP 时普通登录密码可能无法用于 Git over HTTP。"
+        )
+        if error_msg:
+            last_line = error_msg.splitlines()[-1]
+            message += f" Git 返回: {last_line}"
+        return message
 
     try:
         # 如果提供了 source_id，从数据源获取认证信息
@@ -3091,42 +3166,25 @@ async def verify_git_repo(
                 if auth_config.get("password"):
                     password = password or auth_config.get("password")
 
-        # 如果提供了用户名和密码，嵌入到 URL 中
-        verify_url = git_url
-        if username and password and git_url.startswith("https://"):
-            parsed = urlparse(git_url)
-            # 对用户名和密码进行URL编码，避免特殊字符（如@）导致URL格式错误
-            encoded_username = quote(username, safe="")
-            encoded_password = quote(password, safe="")
-            verify_url = urlunparse(
-                (
-                    parsed.scheme,
-                    f"{encoded_username}:{encoded_password}@{parsed.netloc}",
-                    parsed.path,
-                    parsed.params,
-                    parsed.query,
-                    parsed.fragment,
-                )
-            )
+        verify_url, url_username, url_password = _split_git_url_auth(git_url)
+        username = username or url_username
+        password = password or url_password
+        git_env = _build_git_env(username, password)
 
         # 使用 git ls-remote 命令获取远程仓库的分支和标签
         # 这个命令不需要克隆整个仓库，只获取引用信息
         cmd = ["git", "ls-remote", "--heads", "--tags", verify_url]
 
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30  # 30秒超时
+            cmd, capture_output=True, text=True, timeout=30, env=git_env  # 30秒超时
         )
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()
-            if (
-                "Authentication failed" in error_msg
-                or "Permission denied" in error_msg
-                or "fatal: could not read Username" in error_msg
-            ):
+            if _git_access_denied(error_msg):
                 raise HTTPException(
                     status_code=403,  # 使用 403 而不是 401，避免被前端拦截器误判为登录失效
-                    detail="仓库访问被拒绝，请检查认证信息是否正确或配置 SSH 密钥",
+                    detail=_git_auth_detail(error_msg),
                 )
             elif "not found" in error_msg.lower():
                 raise HTTPException(
@@ -3191,7 +3249,7 @@ async def verify_git_repo(
                 ]
 
                 clone_result = subprocess.run(
-                    clone_cmd, capture_output=True, text=True, timeout=60
+                    clone_cmd, capture_output=True, text=True, timeout=60, env=git_env
                 )
 
                 if clone_result.returncode == 0:
@@ -4388,6 +4446,109 @@ async def get_build_task_logs(
         raise HTTPException(status_code=500, detail=f"获取任务日志失败: {str(e)}")
 
 
+def _create_build_task_log_share_token(
+    task_id: str,
+    user_id: str,
+    team_id: Optional[str],
+) -> tuple[str, datetime]:
+    expires_at = datetime.now() + timedelta(days=BUILD_TASK_LOG_SHARE_EXPIRE_DAYS)
+    payload = {
+        "type": BUILD_TASK_LOG_SHARE_TOKEN_TYPE,
+        "task_id": task_id,
+        "user_id": user_id,
+        "team_id": team_id,
+        "exp": expires_at,
+        "iat": datetime.now(),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256"), expires_at
+
+
+def _verify_build_task_log_share_token(token: str) -> str:
+    if not token or not token.strip():
+        raise HTTPException(status_code=401, detail="访问令牌不能为空")
+    try:
+        payload = jwt.decode(
+            token.strip(),
+            SECRET_KEY,
+            algorithms=["HS256"],
+            options={"verify_iat": False},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="日志访问链接已过期")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+
+    if payload.get("type") != BUILD_TASK_LOG_SHARE_TOKEN_TYPE:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+    task_id = payload.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=401, detail="日志访问链接无效")
+    return task_id
+
+
+@router.post("/build-tasks/{task_id}/logs/share-link")
+async def create_build_task_log_share_link(
+    task_id: str,
+    request: Request,
+    team_id: Optional[str] = Query(None, description="当前团队 ID"),
+):
+    """生成无需登录即可访问的单任务日志链接"""
+    try:
+        from backend.database import get_db_session
+
+        db = get_db_session()
+        try:
+            username = require_auth(request)
+            user_id = get_user_id_by_username(db, username)
+            scoped_team_id = resolve_team_scope(db, user_id, team_id)
+            require_task_in_team(db, user_id, task_id, scoped_team_id)
+        finally:
+            db.close()
+
+        manager = BuildTaskManager()
+        task = manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+
+        token, expires_at = _create_build_task_log_share_token(
+            task_id, user_id, scoped_team_id
+        )
+        OperationLogger.log(
+            username,
+            "create_build_task_log_share_link",
+            {"task_id": task_id, "expires_at": expires_at.isoformat()},
+        )
+        return JSONResponse(
+            {
+                "url": f"/api/public/build-task-logs?token={token}",
+                "expires_at": expires_at.isoformat(),
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成日志访问链接失败: {str(e)}")
+
+
+@router.get("/public/build-task-logs")
+async def get_public_build_task_logs(
+    token: str = Query(..., description="日志访问令牌"),
+):
+    """通过公开日志令牌读取单个构建任务日志"""
+    try:
+        task_id = _verify_build_task_log_share_token(token)
+        manager = BuildTaskManager()
+        task = manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        logs = manager.get_logs(task_id)
+        return PlainTextResponse(logs or "暂无日志")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取任务日志失败: {str(e)}")
+
+
 @router.post("/build-tasks/{task_id}/stop")
 async def stop_build_task(
     task_id: str,
@@ -4790,6 +4951,20 @@ async def get_docker_build_stats(request: Request):
         return cache_manager.get_build_dir_stats()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取构建目录统计失败: {str(e)}")
+
+
+@router.get("/maintenance/cache-cleanup/status")
+async def get_cache_cleanup_status(request: Request):
+    """获取自动构建缓存清理状态（含最后一次清理摘要）"""
+    require_auth(request)
+    try:
+        from backend.build_cache_cleaner import get_cleanup_status
+
+        return get_cleanup_status()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"获取自动清理状态失败: {str(e)}"
+        )
 
 
 @router.get("/exports/stats")
