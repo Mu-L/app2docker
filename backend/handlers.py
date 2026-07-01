@@ -245,6 +245,47 @@ def get_user_template_path(template_name, project_type="jar"):
     return os.path.join(type_dir, f"{template_name}.Dockerfile")
 
 
+def warn_for_risky_maven_offline_build(dockerfile_path: str, log=None) -> None:
+    """Detect Maven offline builds that commonly fail after go-offline."""
+    try:
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        if log:
+            log(f"⚠️  无法检查 Dockerfile Maven 离线构建风险: {e}\n")
+        return
+
+    if "dependency:go-offline" not in content:
+        return
+
+    lines = content.splitlines()
+    offline_maven_lines = [
+        idx
+        for idx, line in enumerate(lines, start=1)
+        if re.search(r"\bmvn\b[^\n#]*\s-o(?:\s|$)", line)
+    ]
+    if not offline_maven_lines:
+        return
+
+    go_offline_lines = [
+        idx for idx, line in enumerate(lines, start=1) if "dependency:go-offline" in line
+    ]
+    if log:
+        log("⚠️  检测到 Dockerfile 中存在 Maven 离线构建高风险写法\n")
+        log(
+            f"   dependency:go-offline 行: {', '.join(map(str, go_offline_lines[:5]))}\n"
+        )
+        log(f"   mvn -o 行: {', '.join(map(str, offline_maven_lines[:5]))}\n")
+        log(
+            "   这类写法在私服、SNAPSHOT、import BOM 或父 POM 场景下经常失败，"
+            "典型错误是 Cannot access ... in offline mode。\n"
+        )
+        log(
+            "   建议改为一次在线构建，例如: mvn -B -U clean package "
+            "-Dmaven.test.skip=true ${MAVEN_SETTINGS}\n"
+        )
+
+
 def parse_dockerfile_services(dockerfile_content: str) -> tuple:
     """
     解析 Dockerfile，识别所有服务阶段（FROM ... AS <stage_name>）
@@ -2066,6 +2107,9 @@ class BuildManager:
             ) as f:
                 f.write(dockerfile_content)
             log(f"✅ 已生成 Dockerfile\n")
+            warn_for_risky_maven_offline_build(
+                os.path.join(build_context, "Dockerfile"), log
+            )
 
             # 复制资源包到构建上下文
             _copy_resource_packages_to_build_context(
@@ -3193,6 +3237,8 @@ class BuildManager:
                     all_template_params,
                 )
                 log(f"✅ 已生成 Dockerfile\n")
+
+            warn_for_risky_maven_offline_build(dockerfile_path, log)
 
             # 复制资源包到构建上下文
             _copy_resource_packages_to_build_context(

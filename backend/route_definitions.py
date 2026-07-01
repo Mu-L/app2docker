@@ -3077,10 +3077,82 @@ async def verify_git_repo(
     ),
 ):
     """验证 Git 仓库并获取分支和标签列表"""
+    import base64
     import subprocess
-    import tempfile
-    import shutil
-    from urllib.parse import urlparse, urlunparse, quote
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    def _split_git_url_auth(url: str) -> tuple[str, Optional[str], Optional[str]]:
+        """Return URL without inline credentials plus credentials found in the URL."""
+        parsed = urlparse(url)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or "@" not in parsed.netloc
+        ):
+            return url, None, None
+
+        userinfo, host = parsed.netloc.rsplit("@", 1)
+        url_username = userinfo
+        url_password = None
+        if ":" in userinfo:
+            url_username, url_password = userinfo.split(":", 1)
+
+        clean_url = urlunparse(
+            (
+                parsed.scheme,
+                host,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+        return clean_url, unquote(url_username), unquote(url_password or "")
+
+    def _build_git_env(git_username: Optional[str], git_password: Optional[str]) -> dict:
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GCM_INTERACTIVE"] = "Never"
+
+        git_config = [("credential.helper", "")]
+        if git_username and git_password:
+            auth_value = f"{git_username}:{git_password}".encode("utf-8")
+            basic_token = base64.b64encode(auth_value).decode("ascii")
+            git_config.append(
+                ("http.extraHeader", f"Authorization: Basic {basic_token}")
+            )
+
+        env["GIT_CONFIG_COUNT"] = str(len(git_config))
+        for index, (key, value) in enumerate(git_config):
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
+        return env
+
+    def _git_access_denied(error_msg: str) -> bool:
+        lower_msg = error_msg.lower()
+        denied_markers = (
+            "authentication failed",
+            "permission denied",
+            "could not read username",
+            "invalid credentials",
+            "access denied",
+            "authorization failed",
+            "returned error: 401",
+            "returned error: 403",
+            "the requested url returned error: 403",
+        )
+        return any(marker in lower_msg for marker in denied_markers)
+
+    def _git_auth_detail(error_msg: str) -> str:
+        message = (
+            "仓库访问被拒绝，请检查 Git URL、账号权限和认证信息。"
+            "如果是 Gitea 25.x 私有仓库，建议使用具备仓库读取权限的 Personal Access Token "
+            "作为密码/token，并填写该 token 所属用户名；开启 MFA/OAuth/LDAP 时普通登录密码可能无法用于 Git over HTTP。"
+        )
+        if error_msg:
+            last_line = error_msg.splitlines()[-1]
+            message += f" Git 返回: {last_line}"
+        return message
 
     try:
         # 如果提供了 source_id，从数据源获取认证信息
@@ -3094,42 +3166,25 @@ async def verify_git_repo(
                 if auth_config.get("password"):
                     password = password or auth_config.get("password")
 
-        # 如果提供了用户名和密码，嵌入到 URL 中
-        verify_url = git_url
-        if username and password and git_url.startswith("https://"):
-            parsed = urlparse(git_url)
-            # 对用户名和密码进行URL编码，避免特殊字符（如@）导致URL格式错误
-            encoded_username = quote(username, safe="")
-            encoded_password = quote(password, safe="")
-            verify_url = urlunparse(
-                (
-                    parsed.scheme,
-                    f"{encoded_username}:{encoded_password}@{parsed.netloc}",
-                    parsed.path,
-                    parsed.params,
-                    parsed.query,
-                    parsed.fragment,
-                )
-            )
+        verify_url, url_username, url_password = _split_git_url_auth(git_url)
+        username = username or url_username
+        password = password or url_password
+        git_env = _build_git_env(username, password)
 
         # 使用 git ls-remote 命令获取远程仓库的分支和标签
         # 这个命令不需要克隆整个仓库，只获取引用信息
         cmd = ["git", "ls-remote", "--heads", "--tags", verify_url]
 
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30  # 30秒超时
+            cmd, capture_output=True, text=True, timeout=30, env=git_env  # 30秒超时
         )
 
         if result.returncode != 0:
             error_msg = result.stderr.strip()
-            if (
-                "Authentication failed" in error_msg
-                or "Permission denied" in error_msg
-                or "fatal: could not read Username" in error_msg
-            ):
+            if _git_access_denied(error_msg):
                 raise HTTPException(
                     status_code=403,  # 使用 403 而不是 401，避免被前端拦截器误判为登录失效
-                    detail="仓库访问被拒绝，请检查认证信息是否正确或配置 SSH 密钥",
+                    detail=_git_auth_detail(error_msg),
                 )
             elif "not found" in error_msg.lower():
                 raise HTTPException(
@@ -3194,7 +3249,7 @@ async def verify_git_repo(
                 ]
 
                 clone_result = subprocess.run(
-                    clone_cmd, capture_output=True, text=True, timeout=60
+                    clone_cmd, capture_output=True, text=True, timeout=60, env=git_env
                 )
 
                 if clone_result.returncode == 0:
