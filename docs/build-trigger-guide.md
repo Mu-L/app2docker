@@ -332,7 +332,30 @@ curl -X POST "$HOST/api/build-from-source" \
 | Web 镜像构建 | 手动构建 | 界面选择/新建数据源 | 可在构建流程中新建 |
 | `/api/build-with-config` | CI/CD、自动化 | 仓库 `.app2docker.yaml` | 否 |
 | `/api/build-from-source` | 脚本、完整参数控制 | 请求体 | 否（可用 `source_id` 或临时认证） |
-| 流水线 Webhook | Push 自动触发 | 平台流水线配置 | 是（或填 git_url） |
+| 流水线 Webhook / 手动 / Cron | 自动构建 | 仓库 `.app2docker-<分支或tag>.yaml`，回退 `.app2docker.yaml`，都不存在时使用平台流水线配置 | 是（或填 git_url） |
+
+### 流水线自动识别配置
+
+流水线在克隆代码后自动检测配置，不需要额外开关：
+
+1. 分支构建优先查找 `.app2docker-<branch>.yaml`。
+2. Tag 构建优先查找 `.app2docker-<tag>.yaml`。
+3. 未找到专用配置时回退 `.app2docker.yaml`。
+4. 仓库中没有配置文件时继续使用平台中保存的流水线配置。
+
+配置存在时，项目类型、Dockerfile/模板、镜像、Tag、推送和多服务参数以仓库配置为准。资源包仍使用平台流水线配置，不从仓库配置自动加载。
+
+项目使用自带 Dockerfile 时，可以通过 `build.build_args` 传递构建参数：
+
+```yaml
+build:
+  use_project_dockerfile: true
+  dockerfile_name: Dockerfile
+  build_args:
+    BUILD_SCRIPT: "build:{profile}"
+```
+
+`build_args` 会传递给 `docker buildx build --build-arg`，其字符串值支持 `{branch}`、`{profile}`、`{commit}`、`{date}` 和 `{timestamp}` 变量。
 
 ---
 

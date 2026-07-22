@@ -1578,6 +1578,44 @@ class BuildManager:
         finally:
             db.close()
 
+    def _sync_resolved_source_config(self, task_id: str, updates: dict) -> None:
+        """将仓库配置解析后的真实构建参数同步回任务记录。"""
+        from backend.database import get_db_session
+        from backend.models import Task
+
+        db = get_db_session()
+        try:
+            task = db.query(Task).filter(Task.task_id == task_id).first()
+            if not task:
+                return
+            cfg = dict(task.task_config or {})
+            cfg.update(updates)
+            task.task_config = cfg
+            if updates.get("image_name"):
+                task.image = updates["image_name"]
+            if updates.get("tag"):
+                task.tag = updates["tag"]
+            if "project_type" in updates:
+                task.project_type = updates["project_type"]
+            if "template" in updates:
+                task.template = updates["template"]
+            if "should_push" in updates:
+                task.should_push = bool(updates["should_push"])
+            if "sub_path" in updates:
+                task.sub_path = updates["sub_path"]
+            if "use_project_dockerfile" in updates:
+                task.use_project_dockerfile = bool(
+                    updates["use_project_dockerfile"]
+                )
+            if updates.get("dockerfile_name"):
+                task.dockerfile_name = updates["dockerfile_name"]
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def _start_build_upload_thread(self, task_id: str) -> None:
         """从 staging 读取上传文件并执行文件上传构建（供全局队列调度）。"""
         task_row = self.task_manager.get_task(task_id)
@@ -2738,6 +2776,7 @@ class BuildManager:
     ):
         """从 Git 源码构建任务"""
         config_overrides = config_overrides or {}
+        build_args = {}
         # 兼容场景：页面选择多阶段模式但仅选了一个服务时，实际会走单服务构建分支。
         # 此时应优先使用该服务在 service_push_config 中的镜像名/标签，避免出现
         # push 到 registry/namespace（缺少镜像名）导致本地 tag 不存在。
@@ -3068,26 +3107,59 @@ class BuildManager:
 
                 if merged.get("project_type"):
                     project_type = merged["project_type"]
-                if merged.get("template"):
-                    selected_template = merged["template"]
+                if "template" in merged:
+                    selected_template = merged["template"] or ""
                 if merged.get("image_name"):
                     image_name = merged["image_name"]
                 if merged.get("tag"):
                     tag = resolve_variables(merged["tag"], context)
                 if "should_push" in merged:
                     should_push = merged["should_push"]
-                if merged.get("template_params"):
-                    template_params = merged["template_params"]
+                if "template_params" in merged:
+                    template_params = merged["template_params"] or {}
                 if "use_project_dockerfile" in merged:
                     use_project_dockerfile = merged["use_project_dockerfile"]
                 if merged.get("dockerfile_name"):
                     dockerfile_name = merged["dockerfile_name"]
-                if merged.get("sub_path"):
+                if "sub_path" in merged:
                     sub_path = merged["sub_path"]
-                if merged.get("selected_services"):
-                    selected_services = merged["selected_services"]
-                if merged.get("service_push_config"):
-                    service_push_config = merged["service_push_config"]
+                if "build_args" in merged:
+                    build_args = merged["build_args"] or {}
+                if "selected_services" in merged:
+                    selected_services = merged["selected_services"] or []
+                if "service_push_config" in merged:
+                    service_push_config = merged["service_push_config"] or {}
+                if "service_template_params" in merged:
+                    service_template_params = merged["service_template_params"] or {}
+                if merged.get("push_mode"):
+                    push_mode = merged["push_mode"]
+
+                resolved_task_updates = {
+                    "image_name": image_name,
+                    "tag": tag,
+                    "branch": actual_branch or branch,
+                    "project_type": project_type,
+                    "template": selected_template or "",
+                    "template_params": template_params or {},
+                    "should_push": should_push,
+                    "sub_path": sub_path,
+                    "use_project_dockerfile": use_project_dockerfile,
+                    "dockerfile_name": dockerfile_name,
+                    "build_args": build_args,
+                    "selected_services": selected_services or [],
+                    "service_push_config": service_push_config or {},
+                    "service_template_params": service_template_params or {},
+                    "push_mode": push_mode,
+                    "config_source": os.path.basename(config_path),
+                    "config_profile": used_profile,
+                    "config_commit": commit_hash,
+                }
+                self._sync_resolved_source_config(task_id, resolved_task_updates)
+
+                if merged.get("resource_package_ids"):
+                    log(
+                        "⚠️ 仓库配置中的资源包未自动应用；资源包继续使用流水线平台配置\n"
+                    )
 
                 full_tag = f"{image_name}:{tag}"
                 build_context = os.path.join(
@@ -3096,11 +3168,18 @@ class BuildManager:
                 log(
                     f"📄 使用配置文件: {os.path.basename(config_path)} (profile={used_profile})\n"
                 )
-            elif config_only_overrides and not selected_template:
-                raise RuntimeError(
-                    f"未找到 profile={resolved_profile} 对应的配置文件，"
-                    "且未提供 template 等构建参数"
-                )
+            elif config_only_overrides:
+                task_row = self.task_manager.get_task(task_id) or {}
+                if task_row.get("pipeline_id"):
+                    log(
+                        f"ℹ️ 未找到 profile={resolved_profile} 对应的配置文件，"
+                        "继续使用流水线配置\n"
+                    )
+                elif not selected_template:
+                    raise RuntimeError(
+                        f"未找到 profile={resolved_profile} 对应的配置文件，"
+                        "且未提供 template 等构建参数"
+                    )
 
             # 如果指定了子目录，使用子目录作为构建上下文
             source_dir = actual_clone_dir
@@ -3359,6 +3438,7 @@ logs/
                             "path": build_context,
                             "tag": full_tag,
                             "dockerfile": dockerfile_relative,
+                            "buildargs": build_args,
                         }
                         # 只有在有明确的 target stage 时才添加 target 参数
                         if target_stage:
@@ -3493,6 +3573,7 @@ logs/
                                 "path": build_context,
                                 "tag": service_tag,
                                 "dockerfile": dockerfile_relative,
+                                "buildargs": build_args,
                             }
                             build_kwargs["target"] = target_stage
                             log(f"🚀 构建目标阶段: {target_stage}\n")
@@ -3889,7 +3970,10 @@ logs/
                 log(f"🐳 准备调用 Docker 构建器...\n")
                 try:
                     build_stream = docker_builder.build_image(
-                        path=build_context, tag=full_tag, dockerfile=dockerfile_relative
+                        path=build_context,
+                        tag=full_tag,
+                        dockerfile=dockerfile_relative,
+                        buildargs=build_args,
                     )
                     log(f"✅ Docker 构建流已启动\n")
                 except Exception as e:
@@ -4981,6 +5065,9 @@ def pipeline_to_task_config(
     """
     git_ref_type = (kwargs.pop("git_ref_type", "branch") or "branch").lower()
     git_ref_name = kwargs.pop("git_ref_name", None)
+    # 流水线构建自动识别仓库中的 .app2docker 配置。配置存在时以仓库配置
+    # 为准；不存在时由构建线程继续使用这里生成的流水线快照。
+    kwargs.setdefault("config_only_overrides", True)
     # 确定使用的分支和标签
     # 如果明确提供了branch参数（不为None），使用它；否则使用流水线配置的分支
     # 注意：空字符串也是有效的分支名（表示默认分支），所以只检查 None
@@ -4989,6 +5076,8 @@ def pipeline_to_task_config(
     else:
         final_branch = pipeline.get("branch")
     git_ref_name = git_ref_name or final_branch
+    if git_ref_type == "tag":
+        kwargs.setdefault("tag_name", git_ref_name)
 
     # 保存流水线的原始标签（用于多服务模式下的标签更新判断）
     pipeline_original_tag = pipeline.get("tag", "latest")
