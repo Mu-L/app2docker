@@ -3162,9 +3162,9 @@ class BuildManager:
                     )
 
                 full_tag = f"{image_name}:{tag}"
-                build_context = os.path.join(
-                    BUILD_DIR, f"{image_name.replace('/', '_')}_{task_id[:8]}"
-                )
+                # 构建上下文已在克隆前按任务创建，其中包含 source_temp。
+                # 仓库配置可能覆盖 image_name；此处不可随镜像名切换目录，否则
+                # 文件会复制到尚未创建的新目录，并遗留原克隆目录。
                 log(
                     f"📄 使用配置文件: {os.path.basename(config_path)} (profile={used_profile})\n"
                 )
