@@ -39,6 +39,10 @@ app2docker deploy list [--json]
 app2docker deploy trigger CONFIG_ID [--target NAME] [--detach] [--json]
 ```
 
+跟踪类命令支持 `--retries COUNT`、`--poll-interval SECONDS` 和
+`--timeout SECONDS`。日志按服务端日志 ID 增量读取；临时连接错误会退避重试，
+超时或 Ctrl+C 仅停止本地等待。JSON 模式把实时日志写入 stderr，最终 JSON 写入 stdout。
+
 `run` and `trigger` are aliases for pipeline and deployment configurations. They call the same authenticated server-side execution paths used by the web UI and record `trigger_source=cli`. A build with `--save-pipeline` creates the pipeline and starts its first linked build. `build --deploy CONFIG_ID` triggers the saved deployment configuration only after the build completes successfully; it cannot be combined with `--detach`.
 
 Exit status is 0 for success, 1 for an API or remote build failure, 2 for local usage/configuration errors, and 130 when log following is interrupted.

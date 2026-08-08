@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import subprocess
@@ -182,3 +183,147 @@ def test_cli_build_then_deploy_waits_for_success(monkeypatch, capsys):
     assert client.calls[1][1] == "/api/deploy-tasks/config-1/execute"
     output = capsys.readouterr().out
     assert '"build"' in output and '"deployment"' in output
+
+
+def test_follow_task_streams_incremental_logs_and_reports_failure(capsys):
+    class Client:
+        def __init__(self):
+            self.statuses = iter(("running", "failed"))
+            self.pages = iter(
+                (
+                    {"logs": "step 1\n", "next_after_id": 4},
+                    {"logs": "build failed\n", "next_after_id": 7},
+                )
+            )
+            self.queries = []
+
+        def request(self, method, path, **kwargs):
+            if path.endswith("/logs"):
+                self.queries.append(kwargs["query"])
+                return next(self.pages)
+            status = next(self.statuses)
+            return {"task_id": "task-1", "status": status, "error": "docker build 失败"}
+
+    client = Client()
+    task = cli.follow_task(client, "task-1", "team-1", poll_interval=0)
+
+    output = capsys.readouterr()
+    assert task["status"] == "failed"
+    assert output.out == "step 1\nbuild failed\n"
+    assert "任务结束：failed - docker build 失败" in output.err
+    assert [query["after_id"] for query in client.queries] == [0, 4]
+
+
+def test_follow_task_retries_transient_error_and_keeps_json_stdout_clean(capsys):
+    class Client:
+        def __init__(self):
+            self.failed = False
+
+        def request(self, method, path, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise cli.CLIError("connection reset")
+            if path.endswith("/logs"):
+                return {"logs": "final log\n", "next_after_id": 2}
+            return {"task_id": "task-1", "status": "completed"}
+
+    task = cli.follow_task(
+        Client(), "task-1", "team-1", json_output=True, poll_interval=0, retries=1
+    )
+
+    output = capsys.readouterr()
+    assert task["status"] == "completed"
+    assert json.loads(output.out)["status"] == "completed"
+    assert "final log" in output.err
+    assert "跟踪暂时中断" in output.err
+
+
+def test_failed_build_does_not_trigger_deployment(monkeypatch):
+    client = _FakeClient({"task_id": "build-1"})
+    monkeypatch.setattr(
+        cli,
+        "git_context",
+        lambda project: {
+            "root": Path(project),
+            "branch": "main",
+            "commit": "abc",
+            "remote": "https://example.com/repo.git",
+            "dirty": False,
+            "upstream": "origin/main",
+            "upstream_commit": "abc",
+        },
+    )
+    monkeypatch.setattr(
+        cli, "follow_task", lambda *args, **kwargs: {"status": "failed", "error": "bad Dockerfile"}
+    )
+    args = cli.parser().parse_args(
+        ["build", "--source", "git", "--deploy", "config-1"]
+    )
+
+    assert cli.cmd_build(args, client, {"team_id": "team-1"}) == 1
+    assert [call[1] for call in client.calls] == ["/api/build-with-config"]
+
+
+def test_follow_task_timeout_keeps_remote_task_running(monkeypatch):
+    class Client:
+        def request(self, method, path, **kwargs):
+            if path.endswith("/logs"):
+                return {"logs": "", "next_after_id": 0}
+            return {"task_id": "task-1", "status": "running"}
+
+    ticks = iter((0, 0, 2))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(cli.CLIError, match="远端任务仍在运行"):
+        cli.follow_task(Client(), "task-1", "team-1", timeout=1)
+
+
+def test_server_incremental_logs_return_stable_id_cursor(monkeypatch):
+    class Column:
+        def __eq__(self, other):
+            return self
+
+        def __gt__(self, other):
+            return self
+
+        def asc(self):
+            return self
+
+    class TaskLog:
+        task_id = Column()
+        id = Column()
+
+    rows = [
+        type("Log", (), {"id": 11, "log_message": "one\n"})(),
+        type("Log", (), {"id": 15, "log_message": "two\n"})(),
+    ]
+
+    class Query:
+        def filter(self, *args):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+        def all(self):
+            return rows
+
+    class Session:
+        closed = False
+
+        def query(self, model):
+            return Query()
+
+        def close(self):
+            self.closed = True
+
+    session = Session()
+    monkeypatch.setattr("backend.database.get_db_session", lambda: session)
+    monkeypatch.setattr("backend.models.TaskLog", TaskLog)
+
+    logs, cursor = handlers.BuildTaskManager.get_logs_after(object(), "task-1", 7)
+
+    assert logs == "one\ntwo\n"
+    assert cursor == 15
+    assert session.closed

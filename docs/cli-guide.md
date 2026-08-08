@@ -117,6 +117,9 @@ app2docker task logs TASK_ID --follow
 app2docker task stop TASK_ID
 ```
 
+跟踪过程使用日志 ID 增量读取，临时连接错误默认自动重试 5 次。可用
+`--retries COUNT`、`--poll-interval SECONDS` 和 `--timeout SECONDS` 调整；跟踪超时或断线退出不会停止远端任务。`--json` 模式仍把实时日志写到 stderr，stdout 只输出最终 JSON。
+
 只有明确需要取消远端构建时才执行 `task stop`。
 
 ## 流水线

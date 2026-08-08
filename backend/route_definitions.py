@@ -4866,6 +4866,7 @@ async def get_build_task_logs(
     task_id: str,
     request: Request,
     team_id: Optional[str] = Query(None, description="当前团队 ID"),
+    after_id: Optional[int] = Query(None, ge=0, description="仅返回该日志 ID 之后的内容"),
 ):
     """获取构建任务日志"""
     try:
@@ -4879,6 +4880,9 @@ async def get_build_task_logs(
         finally:
             db.close()
         manager = BuildTaskManager()
+        if after_id is not None:
+            logs, next_after_id = manager.get_logs_after(task_id, after_id)
+            return JSONResponse({"logs": logs, "next_after_id": next_after_id})
         logs = manager.get_logs(task_id)
         return PlainTextResponse(logs)
     except HTTPException:

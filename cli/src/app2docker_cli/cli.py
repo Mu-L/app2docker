@@ -395,27 +395,64 @@ def follow_task(
     *,
     json_output: bool = False,
     emit_json: bool = True,
+    timeout: float = 0,
+    poll_interval: float = 1,
+    retries: int = 5,
 ) -> Dict[str, Any]:
-    offset = 0
+    after_id = 0
+    started = time.monotonic()
+    failures = 0
     while True:
-        task = client.request("GET", f"/api/build-tasks/{task_id}", query={"team_id": team_id})
-        if not json_output:
-            logs = client.request(
-                "GET", f"/api/build-tasks/{task_id}/logs", query={"team_id": team_id}, text_response=True
+        if timeout > 0 and time.monotonic() - started >= timeout:
+            raise CLIError(
+                f"跟踪任务 {task_id} 超时；远端任务仍在运行，可执行 "
+                f"app2docker task logs {task_id} --follow 继续跟踪"
             )
-            if len(logs) < offset:
-                offset = 0
-            if len(logs) > offset:
-                sys.stdout.write(logs[offset:])
-                sys.stdout.flush()
-                offset = len(logs)
+        try:
+            task = client.request(
+                "GET", f"/api/build-tasks/{task_id}", query={"team_id": team_id}
+            )
+            page = client.request(
+                "GET",
+                f"/api/build-tasks/{task_id}/logs",
+                query={"team_id": team_id, "after_id": after_id},
+            )
+            logs = page.get("logs", "")
+            after_id = int(page.get("next_after_id", after_id))
+            failures = 0
+        except CLIError as exc:
+            retryable = not isinstance(exc, APIError) or exc.status in {
+                408, 425, 429, 500, 502, 503, 504
+            }
+            if not retryable or failures >= retries:
+                raise
+            failures += 1
+            delay = min(max(poll_interval, 0.1) * (2 ** (failures - 1)), 10)
+            print(
+                f"跟踪暂时中断，{delay:g} 秒后重试（{failures}/{retries}）：{exc}",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
+        if logs:
+            stream = sys.stderr if json_output else sys.stdout
+            stream.write(logs)
+            stream.flush()
         if task.get("status") in TERMINAL_STATUSES:
             if json_output and emit_json:
                 print(json.dumps(task, ensure_ascii=False))
             elif not str(task.get("status")) == "completed":
                 print(f"\n任务结束：{task.get('status')} - {task.get('error') or ''}", file=sys.stderr)
             return task
-        time.sleep(1)
+        time.sleep(max(poll_interval, 0))
+
+
+def follow_options(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "timeout": args.timeout,
+        "poll_interval": args.poll_interval,
+        "retries": args.retries,
+    }
 
 
 def build_payload(args: argparse.Namespace, team_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -475,6 +512,7 @@ def cmd_build(args: argparse.Namespace, client: APIClient, config: Dict[str, str
         team_id,
         json_output=args.json,
         emit_json=not args.deploy,
+        **follow_options(args),
     )
     if task.get("status") != "completed":
         if args.json and args.deploy:
@@ -503,7 +541,7 @@ def cmd_task(args: argparse.Namespace, client: APIClient, config: Dict[str, str]
         print(json.dumps(value, ensure_ascii=False, indent=2))
     elif args.task_command == "logs":
         if args.follow:
-            task = follow_task(client, args.task_id, team_id)
+            task = follow_task(client, args.task_id, team_id, **follow_options(args))
             return 0 if task.get("status") == "completed" else 1
         print(client.request("GET", f"/api/build-tasks/{args.task_id}/logs", query={"team_id": team_id}, text_response=True), end="")
     else:
@@ -540,7 +578,9 @@ def cmd_pipeline(args: argparse.Namespace, client: APIClient, config: Dict[str, 
     for task_id in task_ids:
         if len(task_ids) > 1 and not args.json:
             print(f"== {task_id} ==")
-        task = follow_task(client, task_id, team_id, json_output=args.json)
+        task = follow_task(
+            client, task_id, team_id, json_output=args.json, **follow_options(args)
+        )
         success = success and task.get("status") == "completed"
     return 0 if success else 1
 
@@ -554,6 +594,9 @@ def trigger_deployment(
     detach: bool = False,
     json_output: bool = False,
     emit_json: bool = True,
+    timeout: float = 0,
+    poll_interval: float = 1,
+    retries: int = 5,
 ):
     value = client.request(
         "POST",
@@ -571,6 +614,9 @@ def trigger_deployment(
         team_id,
         json_output=json_output,
         emit_json=emit_json,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        retries=retries,
     )
     return value, task
 
@@ -597,6 +643,7 @@ def cmd_deploy(args: argparse.Namespace, client: APIClient, config: Dict[str, st
         target_names=args.target,
         detach=args.detach,
         json_output=args.json,
+        **follow_options(args),
     )
     return 0 if task is None or task.get("status") == "completed" else 1
 
@@ -615,6 +662,12 @@ def add_connection_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--password", help="Basic 密码")
     parser.add_argument("--ca-cert", help="自定义 CA 证书路径")
     parser.add_argument("--team-id", help="团队 ID")
+
+
+def add_follow_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--timeout", type=float, default=0, metavar="SECONDS", help="跟踪超时，0 表示不限时")
+    parser.add_argument("--poll-interval", type=float, default=1, metavar="SECONDS", help="状态轮询间隔")
+    parser.add_argument("--retries", type=int, default=5, metavar="COUNT", help="临时连接错误重试次数")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -654,6 +707,7 @@ def parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--detach", action="store_true")
     build.add_argument("--json", action="store_true")
+    add_follow_options(build)
 
     task = commands.add_parser("task", help="查看或停止任务")
     task_commands = task.add_subparsers(dest="task_command", required=True)
@@ -662,6 +716,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("task_id")
         if name == "logs":
             command.add_argument("--follow", action="store_true")
+            add_follow_options(command)
 
     pipeline = commands.add_parser("pipeline", help="查看或运行流水线")
     pipeline_commands = pipeline.add_subparsers(dest="pipeline_command", required=True)
@@ -673,6 +728,7 @@ def parser() -> argparse.ArgumentParser:
     pipeline_run.add_argument("--tag-name")
     pipeline_run.add_argument("--detach", action="store_true")
     pipeline_run.add_argument("--json", action="store_true")
+    add_follow_options(pipeline_run)
 
     deploy = commands.add_parser("deploy", help="查看或触发部署配置")
     deploy_commands = deploy.add_subparsers(dest="deploy_command", required=True)
@@ -685,6 +741,7 @@ def parser() -> argparse.ArgumentParser:
     )
     deploy_run.add_argument("--detach", action="store_true")
     deploy_run.add_argument("--json", action="store_true")
+    add_follow_options(deploy_run)
     return root
 
 

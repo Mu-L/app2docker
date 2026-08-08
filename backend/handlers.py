@@ -6049,6 +6049,25 @@ class BuildTaskManager:
         finally:
             db.close()
 
+    def get_logs_after(self, task_id: str, after_id: int = 0) -> tuple[str, int]:
+        """增量获取任务日志，游标使用不会因旧日志清理而漂移的主键 ID。"""
+        from backend.database import get_db_session
+        from backend.models import TaskLog
+
+        db = get_db_session()
+        try:
+            logs = (
+                db.query(TaskLog)
+                .filter(TaskLog.task_id == task_id, TaskLog.id > after_id)
+                .order_by(TaskLog.id.asc())
+                .all()
+            )
+            return "".join(log.log_message for log in logs), (
+                logs[-1].id if logs else after_id
+            )
+        finally:
+            db.close()
+
     def delete_task(self, task_id: str) -> bool:
         """删除任务（只有停止、完成或失败的任务才能删除）"""
         from backend.database import get_db_session
