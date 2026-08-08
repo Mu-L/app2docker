@@ -128,6 +128,9 @@ def _run_init_db_migrations():
     # 迁移：添加流水线 Tag 构建开关字段（如果不存在）
     migrate_add_pipeline_tag_build_enabled()
 
+    # 迁移：流水线可固定使用仓库内的 .app2docker profile
+    migrate_add_pipeline_profile()
+
     # 迁移：添加Portainer相关字段到agent_hosts表（如果不存在）
     migrate_add_portainer_fields()
 
@@ -302,6 +305,23 @@ def migrate_add_pipeline_tag_build_enabled():
             print(f"⚠️ 迁移tag_build_enabled字段失败: {e}")
     except Exception as e:
         print(f"⚠️ 迁移tag_build_enabled字段失败: {e}")
+
+
+def migrate_add_pipeline_profile():
+    """为pipelines表添加profile字段。"""
+    try:
+        os.makedirs(DB_DIR, exist_ok=True)
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(pipelines)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "profile" not in columns:
+            cursor.execute("ALTER TABLE pipelines ADD COLUMN profile VARCHAR(255)")
+            conn.commit()
+            print("✅ pipelines.profile 字段添加成功")
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ 迁移 pipelines.profile 字段失败: {e}")
 
 
 def migrate_add_portainer_fields():

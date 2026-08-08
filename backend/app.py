@@ -17,6 +17,7 @@ from backend.routes.admin_teams import router as admin_teams_router
 from backend.routes.resource_permissions import router as resource_permissions_router
 from backend.utils import ensure_dirs
 from backend.version import get_version as _get_app_version
+from backend.cli_credential_manager import RequestBodyHashMiddleware
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -33,6 +34,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestBodyHashMiddleware)
 
 # 注册路由（添加 /api 前缀）
 app.include_router(router, prefix="/api")

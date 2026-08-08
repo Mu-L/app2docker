@@ -34,6 +34,7 @@ class Pipeline(Base):
     # Git 配置
     git_url = Column(String(512), nullable=False)
     branch = Column(String(255))
+    profile = Column(String(255))
     sub_path = Column(String(512))
 
     # 构建配置
@@ -622,6 +623,9 @@ class User(Base):
     app_keys = relationship(
         "AppKey", back_populates="user", cascade="all, delete-orphan"
     )
+    cli_credentials = relationship(
+        "CliCredential", back_populates="user", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (Index("idx_user_username", "username"),)
 
@@ -649,7 +653,7 @@ class Role(Base):
 
 
 class AppKey(Base):
-    """用户 APP Key 表"""
+    """用户 API Key 表（保留历史类名和表名以兼容已有数据）。"""
 
     __tablename__ = "app_keys"
 
@@ -671,6 +675,51 @@ class AppKey(Base):
         Index("idx_app_key_hash", "key_hash"),
         Index("idx_app_key_enabled", "enabled"),
     )
+
+
+class CliCredential(Base):
+    """账号绑定的唯一 SSH 公钥凭证。"""
+
+    __tablename__ = "cli_credentials"
+
+    credential_id = Column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    user_id = Column(String(36), ForeignKey("users.user_id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    public_key = Column(Text, nullable=False)
+    fingerprint = Column(String(128), nullable=False, unique=True)
+    enabled = Column(Boolean, default=True)
+    last_used_at = Column(DateTime)
+    expires_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("User", back_populates="cli_credentials")
+    request_nonces = relationship(
+        "CliRequestNonce", back_populates="credential", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_cli_credential_user", "user_id"),
+        Index("idx_cli_credential_fingerprint", "fingerprint", unique=True),
+        Index("idx_cli_credential_enabled", "enabled"),
+    )
+
+
+class CliRequestNonce(Base):
+    """已使用的 CLI 请求 nonce，用于跨进程重放防护。"""
+
+    __tablename__ = "cli_request_nonces"
+
+    nonce_id = Column(String(128), primary_key=True)
+    credential_id = Column(
+        String(36), ForeignKey("cli_credentials.credential_id"), nullable=False
+    )
+    created_at = Column(DateTime, default=datetime.now)
+    credential = relationship("CliCredential", back_populates="request_nonces")
+
+    __table_args__ = (Index("idx_cli_nonce_created", "created_at"),)
 
 
 class Permission(Base):

@@ -652,8 +652,8 @@ async function loadAdminAppKeys() {
   adminAppKeysLoading.value = true;
   adminAppKeysError.value ="";
   try {
-    const res = await axios.get(`/api/users/${uid}/app-keys`);
-    adminAppKeys.value = res.data?.app_keys || [];
+    const res = await axios.get(`/api/users/${uid}/api-keys`);
+    adminAppKeys.value = res.data?.api_keys || [];
   } catch (err) {
     console.error("加载用户 API 密钥失败:", err);
     adminAppKeysError.value =
@@ -674,8 +674,8 @@ async function createAdminAppKey() {
     if (adminNewAppKey.value.expiresAt) {
       payload.expires_at = new Date(adminNewAppKey.value.expiresAt).toISOString();
     }
-    const res = await axios.post(`/api/users/${uid}/app-keys`, payload);
-    adminCreatedAppKey.value = res.data?.app_key ||"";
+    const res = await axios.post(`/api/users/${uid}/api-keys`, payload);
+    adminCreatedAppKey.value = res.data?.api_key ||"";
     adminNewAppKey.value = { name:"", expiresAt:"" };
     adminShowCreateForm.value = false;
     await loadAdminAppKeys();
@@ -692,7 +692,7 @@ async function toggleAdminAppKey(keyId) {
   if (!uid) return;
   adminAppKeysError.value ="";
   try {
-    await axios.put(`/api/users/${uid}/app-keys/${keyId}/toggle`);
+    await axios.put(`/api/users/${uid}/api-keys/${keyId}/toggle`);
     await loadAdminAppKeys();
   } catch (err) {
     adminAppKeysError.value =
@@ -706,7 +706,7 @@ async function removeAdminAppKey(keyId) {
   if (!uid) return;
   adminAppKeysError.value ="";
   try {
-    await axios.delete(`/api/users/${uid}/app-keys/${keyId}`);
+    await axios.delete(`/api/users/${uid}/api-keys/${keyId}`);
     await loadAdminAppKeys();
   } catch (err) {
     adminAppKeysError.value =

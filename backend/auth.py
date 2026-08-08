@@ -94,13 +94,13 @@ def verify_token(token: str) -> dict:
     except jwt.ExpiredSignatureError:
         return {'valid': False, 'error': 'Token 已过期'}
     except jwt.InvalidTokenError:
-        # JWT 无效时，兼容把 token 当作 APP Key 使用
+        # JWT 无效时，兼容把 token 当作 API Key 使用
         try:
             from backend.app_key_manager import validate_app_key
 
             app_key_result = validate_app_key(token)
             if app_key_result and app_key_result.get("username"):
-                return {'valid': True, 'username': app_key_result["username"], 'auth_type': 'app_key'}
+                return {'valid': True, 'username': app_key_result["username"], 'auth_type': 'api_key'}
         except Exception:
             pass
         return {'valid': False, 'error': 'Token 无效'}

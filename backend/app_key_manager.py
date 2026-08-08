@@ -1,4 +1,4 @@
-"""APP Key 管理模块"""
+"""API Key 管理模块（数据库沿用历史 app_keys 命名）。"""
 import secrets
 import hashlib
 from datetime import datetime
@@ -13,7 +13,7 @@ def _hash_app_key(raw_key: str) -> str:
 
 
 def generate_app_key(user_id: str, name: str, expires_at: Optional[datetime] = None) -> dict:
-    """为用户生成新的 APP Key（仅返回一次明文）"""
+    """为用户生成新的 API Key（仅返回一次明文）。"""
     db = get_db_session()
     try:
         raw_key = f"a2d_{secrets.token_hex(16)}"
@@ -39,14 +39,14 @@ def generate_app_key(user_id: str, name: str, expires_at: Optional[datetime] = N
             "enabled": app_key.enabled,
             "created_at": app_key.created_at.isoformat() if app_key.created_at else None,
             "expires_at": app_key.expires_at.isoformat() if app_key.expires_at else None,
-            "app_key": raw_key,
+            "api_key": raw_key,
         }
     finally:
         db.close()
 
 
 def validate_app_key(raw_key: str) -> Optional[dict]:
-    """校验 APP Key，返回用户信息"""
+    """校验 API Key，返回用户信息。"""
     if not raw_key:
         return None
 
@@ -81,7 +81,7 @@ def validate_app_key(raw_key: str) -> Optional[dict]:
 
 
 def get_user_app_keys(user_id: str) -> list[dict]:
-    """获取用户 APP Key 列表（不返回明文）"""
+    """获取用户 API Key 列表（不返回明文）。"""
     db = get_db_session()
     try:
         keys = (

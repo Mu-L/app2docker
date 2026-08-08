@@ -65,6 +65,7 @@ class PipelineManager:
                 "enabled": pipeline.enabled,
                 "git_url": pipeline.git_url,
                 "branch": pipeline.branch,
+                "profile": getattr(pipeline, "profile", None),
                 "sub_path": pipeline.sub_path,
                 "project_type": pipeline.project_type,
                 "template": pipeline.template,
@@ -149,6 +150,7 @@ class PipelineManager:
         name: str,
         git_url: str,
         branch: str = None,
+        profile: str = None,
         project_type: str = "jar",
         template: str = None,
         image_name: str = None,
@@ -226,6 +228,7 @@ class PipelineManager:
                 enabled=enabled,
                 git_url=git_url,
                 branch=branch,
+                profile=(profile or "").strip() or None,
                 sub_path=sub_path,
                 project_type=project_type,
                 template=template,
@@ -303,6 +306,7 @@ class PipelineManager:
                 "enabled": bool(row["enabled"]),
                 "git_url": row["git_url"],
                 "branch": row["branch"],
+                "profile": row["profile"] if "profile" in row.keys() else None,
                 "sub_path": row["sub_path"],
                 "project_type": row["project_type"],
                 "template": row["template"],
@@ -432,6 +436,7 @@ class PipelineManager:
             "enabled": bool(row["enabled"]),
             "git_url": row["git_url"],
             "branch": row["branch"],
+            "profile": row["profile"] if "profile" in row.keys() else None,
             "sub_path": row["sub_path"],
             "project_type": row["project_type"],
             "template": row["template"],
@@ -599,6 +604,7 @@ class PipelineManager:
         name: str = None,
         git_url: str = None,
         branch: str = None,
+        profile: str = None,
         project_type: str = None,
         template: str = None,
         image_name: str = None,
@@ -653,6 +659,8 @@ class PipelineManager:
                 pipeline.git_url = git_url
             if branch is not None:
                 pipeline.branch = branch
+            if profile is not None:
+                pipeline.profile = profile.strip() or None
             if project_type is not None:
                 pipeline.project_type = project_type
             if template is not None:
@@ -950,6 +958,7 @@ class PipelineManager:
             name=new_name,
             git_url=source.git_url,
             branch=source.branch,
+            profile=getattr(source, "profile", None),
             project_type=source.project_type or "jar",
             template=source.template,
             image_name=source.image_name,

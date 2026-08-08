@@ -52,6 +52,22 @@ def test_pipeline_tasks_enable_optional_repository_config():
     assert task["image_name"] == "fallback/image"
 
 
+def test_pipeline_tasks_preserve_fixed_profile():
+    task = pipeline_to_task_config(
+        {
+            "pipeline_id": "pipeline-1",
+            "git_url": "https://example.com/repo.git",
+            "branch": "main",
+            "profile": "prod",
+            "image_name": "fallback/image",
+            "tag": "latest",
+        },
+        trigger_source="manual",
+    )
+
+    assert task["profile"] == "prod"
+
+
 def test_tag_pipeline_uses_git_tag_as_config_profile():
     task = pipeline_to_task_config(
         {

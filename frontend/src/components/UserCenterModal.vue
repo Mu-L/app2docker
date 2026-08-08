@@ -50,7 +50,7 @@
             : 'border-transparent text-slate-500 hover:text-slate-800'"
         @click="switchToAppKeys"
       >
-        API 密钥
+        CLI 认证
       </button>
     </div>
 
@@ -102,8 +102,90 @@
     <div v-else-if="activeTab === 'appkeys' && !requirePasswordChange">
       <div class="mb-3 flex items-center justify-between">
         <h4 class="flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <AppIcon name="fingerprint" class="text-blue-600" />
+          唯一证书凭证
+        </h4>
+        <Button size="sm" type="button" @click="showCredentialForm = !showCredentialForm">
+          <AppIcon name="plus" /> 上传公钥
+        </Button>
+      </div>
+      <p class="mb-3 text-xs text-slate-500">
+        上传本机 SSH 公钥（.pub），私钥只保留在本机。同一公钥只能绑定一个账号。
+      </p>
+
+      <Card v-if="showCredentialForm" class="mb-4">
+        <CardContent class="space-y-3 p-4">
+          <div class="space-y-2">
+            <Label>名称</Label>
+            <Input v-model="newCredential.name" placeholder="例如：办公电脑" maxlength="255" />
+          </div>
+          <div class="space-y-2">
+            <Label>SSH 公钥</Label>
+            <input type="file" accept=".pub,.pem,text/plain" class="block w-full text-sm" @change="readPublicKeyFile" />
+            <textarea
+              v-model="newCredential.publicKey"
+              rows="3"
+              class="w-full rounded-md border border-slate-200 px-3 py-2 font-mono text-xs"
+              placeholder="ssh-ed25519 AAAA..."
+            />
+          </div>
+          <div class="space-y-2">
+            <Label>过期时间（可选）</Label>
+            <Input v-model="newCredential.expiresAt" type="datetime-local" />
+          </div>
+          <Button
+            size="sm"
+            type="button"
+            :disabled="creatingCredential || !newCredential.name.trim() || !newCredential.publicKey.trim()"
+            @click="createCredential"
+          >
+            <AppIcon v-if="creatingCredential" name="spinner" spin />
+            绑定到当前账号
+          </Button>
+        </CardContent>
+      </Card>
+
+      <div v-if="credentialsLoading" class="flex items-center gap-2 py-4 text-sm text-slate-500">
+        <AppIcon name="spinner" spin /> 加载中…
+      </div>
+      <EmptyState v-else-if="credentials.length === 0" message="暂无证书凭证" icon="fingerprint" />
+      <Table v-else min-width-class="min-w-[48rem]" class="mb-6">
+        <TableHeader>
+          <TableRow>
+            <TableHead>名称</TableHead>
+            <TableHead>凭证 ID</TableHead>
+            <TableHead>唯一指纹</TableHead>
+            <TableHead>状态</TableHead>
+            <TableHead>最后使用</TableHead>
+            <TableHead class="text-end">操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="item in credentials" :key="item.credential_id">
+            <TableCell>{{ item.name }}</TableCell>
+            <TableCell><code class="text-xs">{{ item.credential_id }}</code></TableCell>
+            <TableCell><code class="text-xs">{{ item.fingerprint }}</code></TableCell>
+            <TableCell>
+              <Badge :variant="item.enabled ? 'success' : 'default'">{{ item.enabled ? "启用" : "禁用" }}</Badge>
+            </TableCell>
+            <TableCell>{{ formatTime(item.last_used_at) }}</TableCell>
+            <TableCell class="text-end">
+              <div class="flex justify-end gap-1">
+                <Button variant="outline" size="sm" type="button" @click="toggleCredential(item.credential_id)">
+                  {{ item.enabled ? "禁用" : "启用" }}
+                </Button>
+                <Button variant="destructive" size="sm" type="button" @click="removeCredential(item.credential_id)">删除</Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <div class="my-5 border-t border-slate-200"></div>
+      <div class="mb-3 flex items-center justify-between">
+        <h4 class="flex items-center gap-2 text-sm font-semibold text-slate-900">
           <AppIcon  name="fingerprint" class="text-blue-600" />
-          API 密钥
+          API Key（可选）
         </h4>
         <Button
           size="sm"
@@ -112,7 +194,7 @@
           @click="showCreateForm = !showCreateForm"
         >
           <AppIcon  name="plus" />
-          创建密钥
+          创建 API Key
         </Button>
       </div>
 
@@ -297,6 +379,11 @@ const success = ref("");
 const activeTab = ref("password");
 const appKeys = ref([]);
 const appKeysLoading = ref(false);
+const credentials = ref([]);
+const credentialsLoading = ref(false);
+const showCredentialForm = ref(false);
+const creatingCredential = ref(false);
+const newCredential = ref({ name:"", publicKey:"", expiresAt:"" });
 const showCreateForm = ref(false);
 const creatingAppKey = ref(false);
 const createdAppKey = ref("");
@@ -336,6 +423,9 @@ function resetState() {
   const tab = props.initialTab;
   activeTab.value = tab ==="appkeys" ?"appkeys" :"password";
   appKeys.value = [];
+  credentials.value = [];
+  showCredentialForm.value = false;
+  newCredential.value = { name:"", publicKey:"", expiresAt:"" };
   showCreateForm.value = false;
   createdAppKey.value ="";
   newAppKey.value = { name:"", expiresAt:"" };
@@ -353,7 +443,7 @@ function handlePrimaryAction() {
 
 async function switchToAppKeys() {
   activeTab.value ="appkeys";
-  await loadAppKeys();
+  await Promise.all([loadCredentials(), loadAppKeys()]);
 }
 
 function formatTime(value) {
@@ -369,8 +459,8 @@ async function loadAppKeys() {
   appKeysLoading.value = true;
   error.value ="";
   try {
-    const res = await axios.get("/api/user/app-keys");
-    appKeys.value = res.data?.app_keys || [];
+    const res = await axios.get("/api/user/api-keys");
+    appKeys.value = res.data?.api_keys || [];
   } catch (err) {
     error.value = err.response?.data?.detail || err.message ||"加载 API 密钥失败";
   } finally {
@@ -388,8 +478,8 @@ async function createAppKey() {
     if (newAppKey.value.expiresAt) {
       payload.expires_at = new Date(newAppKey.value.expiresAt).toISOString();
     }
-    const res = await axios.post("/api/user/app-keys", payload);
-    createdAppKey.value = res.data?.app_key ||"";
+    const res = await axios.post("/api/user/api-keys", payload);
+    createdAppKey.value = res.data?.api_key ||"";
     success.value ="API 密钥创建成功";
     newAppKey.value = { name:"", expiresAt:"" };
     showCreateForm.value = false;
@@ -405,7 +495,7 @@ async function toggleAppKey(keyId) {
   error.value ="";
   success.value ="";
   try {
-    await axios.put(`/api/user/app-keys/${keyId}/toggle`);
+    await axios.put(`/api/user/api-keys/${keyId}/toggle`);
     success.value ="API 密钥状态已更新";
     await loadAppKeys();
   } catch (err) {
@@ -418,11 +508,70 @@ async function removeAppKey(keyId) {
   error.value ="";
   success.value ="";
   try {
-    await axios.delete(`/api/user/app-keys/${keyId}`);
+    await axios.delete(`/api/user/api-keys/${keyId}`);
     success.value ="API 密钥已删除";
     await loadAppKeys();
   } catch (err) {
     error.value = err.response?.data?.detail || err.message ||"删除 API 密钥失败";
+  }
+}
+
+async function loadCredentials() {
+  credentialsLoading.value = true;
+  try {
+    const res = await axios.get("/api/user/cli-credentials");
+    credentials.value = res.data?.credentials || [];
+  } catch (err) {
+    error.value = err.response?.data?.detail || err.message ||"加载证书凭证失败";
+  } finally {
+    credentialsLoading.value = false;
+  }
+}
+
+async function readPublicKeyFile(event) {
+  const file = event.target.files?.[0];
+  if (file) newCredential.value.publicKey = await file.text();
+}
+
+async function createCredential() {
+  creatingCredential.value = true;
+  error.value ="";
+  try {
+    const payload = {
+      name: newCredential.value.name.trim(),
+      public_key: newCredential.value.publicKey.trim(),
+    };
+    if (newCredential.value.expiresAt) {
+      payload.expires_at = new Date(newCredential.value.expiresAt).toISOString();
+    }
+    await axios.post("/api/user/cli-credentials", payload);
+    success.value ="证书凭证已绑定到当前账号";
+    newCredential.value = { name:"", publicKey:"", expiresAt:"" };
+    showCredentialForm.value = false;
+    await loadCredentials();
+  } catch (err) {
+    error.value = err.response?.data?.detail || err.message ||"绑定证书凭证失败";
+  } finally {
+    creatingCredential.value = false;
+  }
+}
+
+async function toggleCredential(credentialId) {
+  try {
+    await axios.put(`/api/user/cli-credentials/${credentialId}/toggle`);
+    await loadCredentials();
+  } catch (err) {
+    error.value = err.response?.data?.detail || err.message ||"更新证书凭证失败";
+  }
+}
+
+async function removeCredential(credentialId) {
+  if (!(await showConfirm({ message:"确定删除该证书凭证吗？", danger: true }))) return;
+  try {
+    await axios.delete(`/api/user/cli-credentials/${credentialId}`);
+    await loadCredentials();
+  } catch (err) {
+    error.value = err.response?.data?.detail || err.message ||"删除证书凭证失败";
   }
 }
 
@@ -487,6 +636,7 @@ watch(
       const tab = props.initialTab;
       activeTab.value = tab ==="appkeys" ?"appkeys" :"password";
       if (activeTab.value ==="appkeys") {
+        loadCredentials();
         loadAppKeys();
       }
     } else {

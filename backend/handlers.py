@@ -11,6 +11,7 @@ import uuid
 import gzip
 import zipfile
 import tarfile
+import stat
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler
@@ -35,6 +36,7 @@ from backend.webhook_trigger import get_branch_mapping_value, normalize_tag_valu
 # 目录配置
 UPLOAD_DIR = "data/uploads"
 BUILD_DIR = "data/docker_build"
+PENDING_SOURCE_DIR = os.path.join(BUILD_DIR, "pending_sources")
 EXPORT_DIR = "data/exports"
 LOGS_DIR = "data/logs"  # 操作日志目录
 # 模板目录：内置模板（只读）+ 用户自定义模板（可读写）
@@ -53,6 +55,82 @@ DOCKER_AVAILABLE = False
 
 # 临时 Git 密码仅驻留内存，供排队任务启动时使用（不写入 task_config）
 _TEMP_GIT_PASSWORD_CACHE: dict = {}
+
+
+def get_source_archive_path(archive_id: str) -> str:
+    """将服务端生成的归档 ID 解析到受控目录。"""
+    try:
+        safe_id = str(uuid.UUID(str(archive_id)))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("无效的本地源码归档 ID")
+    return os.path.join(PENDING_SOURCE_DIR, f"{safe_id}.zip")
+
+
+def cleanup_source_archive(archive_id: str) -> None:
+    if not archive_id:
+        return
+    try:
+        os.remove(get_source_archive_path(archive_id))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 清理本地源码归档失败: {e}")
+
+
+def extract_source_archive(archive_id: str, target_dir: str) -> None:
+    """安全解包 CLI 上传的 ZIP 工作区快照。"""
+    archive_path = get_source_archive_path(archive_id)
+    if not os.path.isfile(archive_path):
+        raise RuntimeError("本地源码快照已丢失，请重新提交构建")
+
+    os.makedirs(target_dir, exist_ok=True)
+    target_root = os.path.abspath(target_dir)
+    try:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            bad_entry = archive.testzip()
+            if bad_entry:
+                raise RuntimeError(f"ZIP 校验失败: {bad_entry}")
+            max_extract_bytes = int(
+                os.environ.get(
+                    "APP2DOCKER_SOURCE_EXTRACT_MAX_BYTES", 2 * 1024 * 1024 * 1024
+                )
+            )
+            if sum(info.file_size for info in archive.infolist()) > max_extract_bytes:
+                raise RuntimeError("本地源码快照解压后过大")
+            for info in archive.infolist():
+                name = info.filename.replace("\\", "/")
+                parts = [part for part in name.split("/") if part not in ("", ".")]
+                if (
+                    not parts
+                    or name.startswith("/")
+                    or any(part == ".." for part in parts)
+                    or (len(parts[0]) >= 2 and parts[0][1] == ":")
+                ):
+                    if not parts and info.is_dir():
+                        continue
+                    raise RuntimeError(f"ZIP 包含非法路径: {info.filename}")
+
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if stat.S_ISLNK(mode):
+                    raise RuntimeError(f"ZIP 不允许符号链接: {info.filename}")
+
+                destination = os.path.abspath(os.path.join(target_root, *parts))
+                if os.path.commonpath([target_root, destination]) != target_root:
+                    raise RuntimeError(f"ZIP 包含非法路径: {info.filename}")
+                if info.is_dir():
+                    os.makedirs(destination, exist_ok=True)
+                    continue
+
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                with archive.open(info, "r") as source, open(destination, "wb") as output:
+                    shutil.copyfileobj(source, output)
+                if mode:
+                    try:
+                        os.chmod(destination, mode & 0o777)
+                    except OSError:
+                        pass
+    except zipfile.BadZipFile as e:
+        raise RuntimeError(f"无效的 ZIP 工作区快照: {e}")
 
 
 def init_docker_builder():
@@ -2570,6 +2648,9 @@ class BuildManager:
             tag_name=task_config.get("tag_name"),
             config_overrides=task_config.get("config_overrides") or {},
             config_only_overrides=task_config.get("config_only_overrides", False),
+            source_mode=task_config.get("source_mode", "git"),
+            source_archive_id=task_config.get("source_archive_id"),
+            source_commit=task_config.get("source_commit"),
         )
 
     def _start_build_from_source_thread(self, task_id: str, task_config: dict):
@@ -2604,6 +2685,9 @@ class BuildManager:
         tag_name = task_config.get("tag_name")
         config_overrides = task_config.get("config_overrides") or {}
         config_only_overrides = task_config.get("config_only_overrides", False)
+        source_mode = task_config.get("source_mode", "git")
+        source_archive_id = task_config.get("source_archive_id")
+        source_commit = task_config.get("source_commit")
 
         thread = threading.Thread(
             target=self._build_from_source_task,
@@ -2635,6 +2719,9 @@ class BuildManager:
                 tag_name,
                 config_overrides,
                 config_only_overrides,
+                source_mode,
+                source_archive_id,
+                source_commit,
             ),
             daemon=True,
         )
@@ -2675,6 +2762,9 @@ class BuildManager:
         tag_name: str = None,  # 检出 Git tag
         config_overrides: dict = None,  # 覆盖配置文件中的参数
         config_only_overrides: bool = False,  # 仅使用 config_overrides 覆盖配置文件
+        source_mode: str = "git",
+        source_archive_id: str = None,
+        source_commit: str = None,
     ):
         """从 Git 源码开始构建"""
         try:
@@ -2713,6 +2803,9 @@ class BuildManager:
                 tag_name=tag_name,
                 config_overrides=config_overrides or {},
                 config_only_overrides=config_only_overrides,
+                source_mode=source_mode or "git",
+                source_archive_id=source_archive_id,
+                source_commit=source_commit,
             )
             if temp_git_password:
                 _TEMP_GIT_PASSWORD_CACHE[task_id] = temp_git_password
@@ -2773,6 +2866,9 @@ class BuildManager:
         tag_name: str = None,  # 检出 Git tag
         config_overrides: dict = None,  # 覆盖配置文件中的参数
         config_only_overrides: bool = False,
+        source_mode: str = "git",
+        source_archive_id: str = None,
+        source_commit: str = None,
     ):
         """从 Git 源码构建任务"""
         config_overrides = config_overrides or {}
@@ -2955,80 +3051,68 @@ class BuildManager:
                     log(f"⚠️ 清理旧构建上下文失败: {e}\n")
             os.makedirs(build_context, exist_ok=True)
 
-            # 克隆 Git 仓库
-            log(f"📥 正在克隆 Git 仓库...\n")
-            # 创建临时目录用于克隆（Git clone 会在目标目录下创建仓库目录）
+            # 准备源码：Git 模式克隆仓库，local 模式解包 CLI 上传的工作区。
             temp_clone_dir = os.path.join(build_context, "source_temp")
             os.makedirs(temp_clone_dir, exist_ok=True)
-
-            # 获取 Git 配置，优先使用数据源的认证信息
-            git_config = get_git_config()
-            if source_id:
-                from backend.git_source_manager import GitSourceManager
-
-                source_manager = GitSourceManager()
-                source_auth = source_manager.get_auth_config(source_id)
-                # 如果数据源有认证信息，优先使用数据源的
-                if source_auth.get("username"):
-                    git_config["username"] = source_auth["username"]
-                if source_auth.get("password"):
-                    git_config["password"] = source_auth["password"]
-                log(f"🔐 使用数据源的认证信息\n")
-            elif temp_git_username or temp_git_password:
-                if temp_git_username:
-                    git_config["username"] = temp_git_username
-                if temp_git_password:
-                    git_config["password"] = temp_git_password
-                log(f"🔐 使用临时 Git 认证信息\n")
-            elif git_config.get("username") or git_config.get("password"):
-                log(f"🔐 使用全局 Git 配置的认证信息\n")
-
             effective_git_ref_type = git_ref_type
             effective_git_ref_name = git_ref_name or branch
             if tag_name:
                 effective_git_ref_type = "tag"
                 effective_git_ref_name = tag_name
-            # Git clone 会在目标目录下创建仓库目录，所以目标目录应该是父目录
-            print(f"🔍 _build_from_source_task:")
-            print(f"   - 参数branch: {branch}")
-            print(f"   - git_ref_type: {effective_git_ref_type}")
-            print(f"   - git_ref_name: {effective_git_ref_name}")
-            print(f"   - 参数tag_name: {tag_name}")
-            print(f"   - 参数profile: {profile}")
-            print(f"   - git_url: {git_url}")
-            if effective_git_ref_type == "tag":
-                log(f"📌 准备克隆标签: {effective_git_ref_name}\n")
+            if source_mode == "local":
+                if not source_archive_id:
+                    raise RuntimeError("本地构建缺少源码快照")
+                log("📥 正在解包本地工作区快照...\n")
+                actual_clone_dir = os.path.join(temp_clone_dir, "snapshot")
+                extract_source_archive(source_archive_id, actual_clone_dir)
+                log("✅ 本地工作区快照已就绪\n")
             else:
-                log(f"📌 准备克隆分支: {branch or '默认分支'}\n")
-            clone_success, clone_error = self._clone_git_repo(
-                git_url,
-                temp_clone_dir,
-                branch,
-                git_config,
-                log,
-                git_ref_type=effective_git_ref_type,
-                git_ref_name=effective_git_ref_name,
-            )
+                log(f"📥 正在克隆 Git 仓库...\n")
+                git_config = get_git_config()
+                if source_id:
+                    from backend.git_source_manager import GitSourceManager
 
-            if not clone_success:
-                error_msg = f"Git 克隆失败"
-                if clone_error:
-                    error_msg += f": {clone_error}"
-                raise RuntimeError(error_msg)
+                    source_auth = GitSourceManager().get_auth_config(source_id)
+                    if source_auth.get("username"):
+                        git_config["username"] = source_auth["username"]
+                    if source_auth.get("password"):
+                        git_config["password"] = source_auth["password"]
+                    log(f"🔐 使用数据源的认证信息\n")
+                elif temp_git_username or temp_git_password:
+                    if temp_git_username:
+                        git_config["username"] = temp_git_username
+                    if temp_git_password:
+                        git_config["password"] = temp_git_password
+                    log(f"🔐 使用临时 Git 认证信息\n")
+                elif git_config.get("username") or git_config.get("password"):
+                    log(f"🔐 使用全局 Git 配置的认证信息\n")
 
-            # Git clone 会在目标目录下创建仓库目录，找到实际的仓库目录
-            # 通常仓库目录名是 URL 的最后一部分（去掉 .git）
-            repo_name = git_url.rstrip("/").split("/")[-1].replace(".git", "")
-            actual_clone_dir = os.path.join(temp_clone_dir, repo_name)
+                if effective_git_ref_type == "tag":
+                    log(f"📌 准备克隆标签: {effective_git_ref_name}\n")
+                else:
+                    log(f"📌 准备克隆分支: {branch or '默认分支'}\n")
+                clone_success, clone_error = self._clone_git_repo(
+                    git_url,
+                    temp_clone_dir,
+                    branch,
+                    git_config,
+                    log,
+                    git_ref_type=effective_git_ref_type,
+                    git_ref_name=effective_git_ref_name,
+                )
+                if not clone_success:
+                    raise RuntimeError(
+                        "Git 克隆失败" + (f": {clone_error}" if clone_error else "")
+                    )
 
-            # 如果找不到，尝试查找 temp_clone_dir 下的第一个目录
-            if not os.path.exists(actual_clone_dir):
-                items = os.listdir(temp_clone_dir)
-                if items:
-                    actual_clone_dir = os.path.join(temp_clone_dir, items[0])
-
-            if not os.path.exists(actual_clone_dir):
-                raise RuntimeError("无法找到克隆的仓库目录")
+                repo_name = git_url.rstrip("/").split("/")[-1].replace(".git", "")
+                actual_clone_dir = os.path.join(temp_clone_dir, repo_name)
+                if not os.path.exists(actual_clone_dir):
+                    items = os.listdir(temp_clone_dir)
+                    if items:
+                        actual_clone_dir = os.path.join(temp_clone_dir, items[0])
+                if not os.path.exists(actual_clone_dir):
+                    raise RuntimeError("无法找到克隆的仓库目录")
 
             # 解析 .app2docker.yaml 配置文件（profile）
             from backend.app2docker_config import (
@@ -3041,33 +3125,34 @@ class BuildManager:
             )
 
             actual_branch = branch or ""
-            commit_hash = ""
-            try:
-                rev_result = subprocess.run(
-                    ["git", "-C", actual_clone_dir, "rev-parse", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                )
-                if rev_result.returncode == 0:
-                    commit_hash = rev_result.stdout.strip()
-                ref_result = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        actual_clone_dir,
-                        "rev-parse",
-                        "--abbrev-ref",
-                        "HEAD",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if ref_result.returncode == 0:
-                    ref_name = ref_result.stdout.strip()
-                    if ref_name and ref_name != "HEAD":
-                        actual_branch = ref_name
-            except Exception as e:
-                log(f"⚠️ 获取 Git 引用信息失败: {e}\n")
+            commit_hash = source_commit or ""
+            if source_mode != "local":
+                try:
+                    rev_result = subprocess.run(
+                        ["git", "-C", actual_clone_dir, "rev-parse", "HEAD"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rev_result.returncode == 0:
+                        commit_hash = rev_result.stdout.strip()
+                    ref_result = subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            actual_clone_dir,
+                            "rev-parse",
+                            "--abbrev-ref",
+                            "HEAD",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if ref_result.returncode == 0:
+                        ref_name = ref_result.stdout.strip()
+                        if ref_name and ref_name != "HEAD":
+                            actual_branch = ref_name
+                except Exception as e:
+                    log(f"⚠️ 获取 Git 引用信息失败: {e}\n")
 
             profile_tag_name = tag_name
             if not profile_tag_name and effective_git_ref_type == "tag":
@@ -4428,6 +4513,8 @@ logs/
 
             traceback.print_exc()
         finally:
+            if source_mode == "local" and source_archive_id:
+                cleanup_source_archive(source_archive_id)
             # 清理构建上下文（可选，保留用于调试）
             pass
             # if os.path.exists(build_context):
@@ -5068,6 +5155,8 @@ def pipeline_to_task_config(
     # 流水线构建自动识别仓库中的 .app2docker 配置。配置存在时以仓库配置
     # 为准；不存在时由构建线程继续使用这里生成的流水线快照。
     kwargs.setdefault("config_only_overrides", True)
+    if pipeline.get("profile"):
+        kwargs.setdefault("profile", pipeline["profile"])
     # 确定使用的分支和标签
     # 如果明确提供了branch参数（不为None），使用它；否则使用流水线配置的分支
     # 注意：空字符串也是有效的分支名（表示默认分支），所以只检查 None
@@ -5389,6 +5478,9 @@ class BuildTaskManager:
                         config_only_overrides=serializable_kwargs.get(
                             "config_only_overrides", False
                         ),
+                        source_mode=serializable_kwargs.get("source_mode", "git"),
+                        source_archive_id=serializable_kwargs.get("source_archive_id"),
+                        source_commit=serializable_kwargs.get("source_commit"),
                     )
                 elif task_type == "build":
                     # 文件上传构建（文件上传没有git_url，但可以保存其他配置）
@@ -6458,7 +6550,13 @@ class BuildTaskManager:
                 target_names=target_names,
                 source_config_id=config_id,  # 关联到配置
                 trigger_source=trigger_source,
-                source=("Webhook" if trigger_source == "webhook" else "手动"),
+                source=(
+                    "Webhook"
+                    if trigger_source == "webhook"
+                    else "CLI"
+                    if trigger_source == "cli"
+                    else "手动"
+                ),
                 created_by=created_by,
             )
 
@@ -7810,12 +7908,22 @@ class OperationLogger:
         from backend.database import get_db_session
         from backend.models import OperationLog
 
+        try:
+            from backend.cli_credential_manager import CURRENT_CLI_CREDENTIAL_ID
+
+            credential_id = CURRENT_CLI_CREDENTIAL_ID.get()
+        except Exception:
+            credential_id = None
+        log_details = dict(details or {})
+        if credential_id:
+            log_details.setdefault("cli_credential_id", credential_id)
+
         db = get_db_session()
         try:
             log_entry = OperationLog(
                 username=username,
                 action=operation,
-                details=details or {},
+                details=log_details,
                 team_id=team_id,
                 timestamp=datetime.now(),
             )

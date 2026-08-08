@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import asyncio
+import base64
 from typing import Any, Dict, Optional, List
 from fastapi import (
     APIRouter,
@@ -37,6 +38,9 @@ from backend.handlers import (
     USER_TEMPLATES_DIR,
     EXPORT_DIR,
     BUILD_DIR,
+    PENDING_SOURCE_DIR,
+    get_source_archive_path,
+    cleanup_source_archive,
     natural_sort_key,
     docker_builder,
     DOCKER_AVAILABLE,
@@ -135,6 +139,22 @@ def _usernames_by_id(user_ids):
 def get_current_username(request: Request) -> str:
     """从请求中获取当前用户名（兼容旧代码，返回unknown而不是抛出异常）"""
     try:
+        if request.headers.get("x-app2docker-credential-id"):
+            from backend.cli_credential_manager import verify_signed_request
+
+            return verify_signed_request(request)["username"]
+
+        auth_header = request.headers.get("authorization", "") or ""
+        if auth_header.lower().startswith("basic "):
+            decoded = base64.b64decode(
+                auth_header[6:].strip(), validate=True
+            ).decode("utf-8")
+            username, password = decoded.split(":", 1)
+            result = authenticate(username, password)
+            if result.get("success") and not result.get("require_password_change"):
+                return result.get("username", "unknown")
+            return "unknown"
+
         api_key = request.headers.get("x-api-key", "").strip()
         if api_key:
             api_key_result = validate_app_key(api_key)
@@ -175,6 +195,33 @@ def get_current_username(request: Request) -> str:
 def require_auth(request: Request) -> str:
     """要求认证，获取当前用户名，token过期时抛出401异常"""
     try:
+        from backend.cli_credential_manager import CURRENT_CLI_CREDENTIAL_ID
+
+        CURRENT_CLI_CREDENTIAL_ID.set(None)
+        if request.headers.get("x-app2docker-credential-id"):
+            from backend.cli_credential_manager import verify_signed_request
+
+            try:
+                return verify_signed_request(request)["username"]
+            except ValueError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+        auth_header = request.headers.get("authorization", "") or ""
+        if auth_header.lower().startswith("basic "):
+            try:
+                decoded = base64.b64decode(
+                    auth_header[6:].strip(), validate=True
+                ).decode("utf-8")
+                username, password = decoded.split(":", 1)
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise HTTPException(status_code=401, detail="Basic 凭证格式无效") from exc
+            result = authenticate(username, password)
+            if result.get("success"):
+                if result.get("require_password_change"):
+                    raise HTTPException(status_code=403, detail="请先在平台修改初始密码")
+                return result["username"]
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
+
         api_key = request.headers.get("x-api-key", "").strip()
         if api_key:
             api_key_result = validate_app_key(api_key)
@@ -601,6 +648,12 @@ class CreateAppKeyRequest(BaseModel):
     expires_at: Optional[str] = None
 
 
+class CreateCliCredentialRequest(BaseModel):
+    name: str
+    public_key: str
+    expires_at: Optional[str] = None
+
+
 @router.post("/change-password")
 async def change_password(request: ChangePasswordRequest, http_request: Request):
     """修改密码"""
@@ -646,9 +699,10 @@ async def change_password(request: ChangePasswordRequest, http_request: Request)
         raise HTTPException(status_code=500, detail=f"修改密码失败: {str(e)}")
 
 
-@router.get("/user/app-keys")
+@router.get("/user/api-keys")
+@router.get("/user/app-keys", include_in_schema=False)
 async def get_my_app_keys(request: Request):
-    """获取当前用户的 APP Key 列表"""
+    """获取当前用户的 API Key 列表。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -660,23 +714,22 @@ async def get_my_app_keys(request: Request):
             if not user:
                 raise HTTPException(status_code=404, detail="用户不存在")
             keys = get_user_app_keys(user.user_id)
-            return JSONResponse({"success": True, "app_keys": keys})
+            return JSONResponse({"success": True, "api_keys": keys})
         finally:
             db.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取 API Key 失败: {str(e)}")
 
 
-@router.post("/user/app-keys")
+@router.post("/user/api-keys")
+@router.post("/user/app-keys", include_in_schema=False)
 async def create_my_app_key(request: CreateAppKeyRequest, http_request: Request):
-    """创建当前用户的 APP Key"""
+    """创建当前用户的 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
-        from datetime import datetime
-
         username = require_auth(http_request)
         db = get_db_session()
         try:
@@ -684,18 +737,19 @@ async def create_my_app_key(request: CreateAppKeyRequest, http_request: Request)
             if not user:
                 raise HTTPException(status_code=404, detail="用户不存在")
 
-            expires_at = None
-            if request.expires_at:
-                expires_text = request.expires_at.replace("Z", "+00:00")
-                expires_at = datetime.fromisoformat(expires_text)
-
             created = generate_app_key(
                 user_id=user.user_id,
                 name=request.name,
-                expires_at=expires_at,
+                expires_at=_parse_optional_expiry(request.expires_at),
             )
             OperationLogger.log(username, "create_app_key", {"name": request.name})
-            return JSONResponse({"success": True, **created})
+            return JSONResponse(
+                {
+                    "success": True,
+                    **created,
+                    "api_key": created.get("api_key"),
+                }
+            )
         finally:
             db.close()
     except ValueError:
@@ -703,12 +757,13 @@ async def create_my_app_key(request: CreateAppKeyRequest, http_request: Request)
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"创建 API Key 失败: {str(e)}")
 
 
-@router.delete("/user/app-keys/{key_id}")
+@router.delete("/user/api-keys/{key_id}")
+@router.delete("/user/app-keys/{key_id}", include_in_schema=False)
 async def delete_my_app_key(key_id: str, request: Request):
-    """删除当前用户的 APP Key"""
+    """删除当前用户的 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -722,21 +777,22 @@ async def delete_my_app_key(key_id: str, request: Request):
 
             deleted = delete_app_key(key_id=key_id, user_id=user.user_id)
             if not deleted:
-                raise HTTPException(status_code=404, detail="APP Key 不存在")
+                raise HTTPException(status_code=404, detail="API Key 不存在")
 
             OperationLogger.log(username, "delete_app_key", {"key_id": key_id})
-            return JSONResponse({"success": True, "message": "APP Key 已删除"})
+            return JSONResponse({"success": True, "message": "API Key 已删除"})
         finally:
             db.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除 API Key 失败: {str(e)}")
 
 
-@router.put("/user/app-keys/{key_id}/toggle")
+@router.put("/user/api-keys/{key_id}/toggle")
+@router.put("/user/app-keys/{key_id}/toggle", include_in_schema=False)
 async def toggle_my_app_key(key_id: str, request: Request):
-    """启用/禁用当前用户的 APP Key"""
+    """启用/禁用当前用户的 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -750,7 +806,7 @@ async def toggle_my_app_key(key_id: str, request: Request):
 
             enabled = toggle_app_key(key_id=key_id, user_id=user.user_id)
             if enabled is None:
-                raise HTTPException(status_code=404, detail="APP Key 不存在")
+                raise HTTPException(status_code=404, detail="API Key 不存在")
 
             OperationLogger.log(
                 username,
@@ -758,14 +814,120 @@ async def toggle_my_app_key(key_id: str, request: Request):
                 {"key_id": key_id, "enabled": enabled},
             )
             return JSONResponse(
-                {"success": True, "enabled": enabled, "message": f"APP Key 已{'启用' if enabled else '禁用'}"}
+                {"success": True, "enabled": enabled, "message": f"API Key 已{'启用' if enabled else '禁用'}"}
             )
         finally:
             db.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"切换 APP Key 状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"切换 API Key 状态失败: {str(e)}")
+
+
+def _parse_optional_expiry(value: Optional[str]):
+    if not value:
+        return None
+    from datetime import datetime
+
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+@router.get("/user/cli-credentials")
+async def get_my_cli_credentials(request: Request):
+    from backend.cli_credential_manager import list_credentials
+    from backend.database import get_db_session
+    from backend.models import User
+
+    username = require_auth(request)
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        return JSONResponse(
+            {"success": True, "credentials": list_credentials(user.user_id)}
+        )
+    finally:
+        db.close()
+
+
+@router.post("/user/cli-credentials")
+async def create_my_cli_credential(
+    request: CreateCliCredentialRequest, http_request: Request
+):
+    from backend.cli_credential_manager import create_credential
+    from backend.database import get_db_session
+    from backend.models import User
+
+    username = require_auth(http_request)
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        credential = create_credential(
+            user.user_id,
+            request.name,
+            request.public_key,
+            expires_at=_parse_optional_expiry(request.expires_at),
+        )
+        OperationLogger.log(
+            username,
+            "create_cli_credential",
+            {
+                "credential_id": credential["credential_id"],
+                "fingerprint": credential["fingerprint"],
+            },
+        )
+        return JSONResponse({"success": True, "credential": credential})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.put("/user/cli-credentials/{credential_id}/toggle")
+async def toggle_my_cli_credential(credential_id: str, request: Request):
+    from backend.cli_credential_manager import toggle_credential
+    from backend.database import get_db_session
+
+    username = require_auth(request)
+    db = get_db_session()
+    try:
+        user_id = get_user_id_by_username(db, username)
+    finally:
+        db.close()
+    enabled = toggle_credential(user_id, credential_id)
+    if enabled is None:
+        raise HTTPException(status_code=404, detail="CLI 凭证不存在")
+    OperationLogger.log(
+        username,
+        "toggle_cli_credential",
+        {"credential_id": credential_id, "enabled": enabled},
+    )
+    return JSONResponse({"success": True, "enabled": enabled})
+
+
+@router.delete("/user/cli-credentials/{credential_id}")
+async def delete_my_cli_credential(credential_id: str, request: Request):
+    from backend.cli_credential_manager import delete_credential
+    from backend.database import get_db_session
+
+    username = require_auth(request)
+    db = get_db_session()
+    try:
+        user_id = get_user_id_by_username(db, username)
+    finally:
+        db.close()
+    if not delete_credential(user_id, credential_id):
+        raise HTTPException(status_code=404, detail="CLI 凭证不存在")
+    OperationLogger.log(
+        username, "delete_cli_credential", {"credential_id": credential_id}
+    )
+    return JSONResponse({"success": True, "message": "CLI 凭证已删除"})
 
 
 # === 用户管理 API ===
@@ -1153,9 +1315,10 @@ def _require_admin(request: Request) -> str:
     return username
 
 
-@router.get("/users/{user_id}/app-keys")
+@router.get("/users/{user_id}/api-keys")
+@router.get("/users/{user_id}/app-keys", include_in_schema=False)
 async def admin_get_user_app_keys(user_id: str, request: Request):
-    """管理员：获取指定用户的 APP Key 列表"""
+    """管理员：获取指定用户的 API Key 列表。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -1172,25 +1335,24 @@ async def admin_get_user_app_keys(user_id: str, request: Request):
                 "admin_list_user_app_keys",
                 {"target_user_id": user_id, "target_username": target.username},
             )
-            return JSONResponse({"success": True, "app_keys": keys})
+            return JSONResponse({"success": True, "api_keys": keys})
         finally:
             db.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取 API Key 失败: {str(e)}")
 
 
-@router.post("/users/{user_id}/app-keys")
+@router.post("/users/{user_id}/api-keys")
+@router.post("/users/{user_id}/app-keys", include_in_schema=False)
 async def admin_create_user_app_key(
     user_id: str, request: CreateAppKeyRequest, http_request: Request
 ):
-    """管理员：为指定用户创建 APP Key"""
+    """管理员：为指定用户创建 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
-        from datetime import datetime
-
         admin_username = _require_admin(http_request)
         db = get_db_session()
         try:
@@ -1198,15 +1360,10 @@ async def admin_create_user_app_key(
             if not target:
                 raise HTTPException(status_code=404, detail="用户不存在")
 
-            expires_at = None
-            if request.expires_at:
-                expires_text = request.expires_at.replace("Z", "+00:00")
-                expires_at = datetime.fromisoformat(expires_text)
-
             created = generate_app_key(
                 user_id=user_id,
                 name=request.name,
-                expires_at=expires_at,
+                expires_at=_parse_optional_expiry(request.expires_at),
             )
             OperationLogger.log(
                 admin_username,
@@ -1225,14 +1382,15 @@ async def admin_create_user_app_key(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"创建 API Key 失败: {str(e)}")
 
 
-@router.delete("/users/{user_id}/app-keys/{key_id}")
+@router.delete("/users/{user_id}/api-keys/{key_id}")
+@router.delete("/users/{user_id}/app-keys/{key_id}", include_in_schema=False)
 async def admin_delete_user_app_key(
     user_id: str, key_id: str, request: Request
 ):
-    """管理员：删除指定用户的 APP Key"""
+    """管理员：删除指定用户的 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -1246,7 +1404,7 @@ async def admin_delete_user_app_key(
 
             deleted = delete_app_key(key_id=key_id, user_id=user_id)
             if not deleted:
-                raise HTTPException(status_code=404, detail="APP Key 不存在")
+                raise HTTPException(status_code=404, detail="API Key 不存在")
 
             OperationLogger.log(
                 admin_username,
@@ -1257,20 +1415,21 @@ async def admin_delete_user_app_key(
                     "key_id": key_id,
                 },
             )
-            return JSONResponse({"success": True, "message": "APP Key 已删除"})
+            return JSONResponse({"success": True, "message": "API Key 已删除"})
         finally:
             db.close()
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"删除 APP Key 失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除 API Key 失败: {str(e)}")
 
 
-@router.put("/users/{user_id}/app-keys/{key_id}/toggle")
+@router.put("/users/{user_id}/api-keys/{key_id}/toggle")
+@router.put("/users/{user_id}/app-keys/{key_id}/toggle", include_in_schema=False)
 async def admin_toggle_user_app_key_user(
     user_id: str, key_id: str, request: Request
 ):
-    """管理员：启用/禁用指定用户的 APP Key"""
+    """管理员：启用/禁用指定用户的 API Key。"""
     try:
         from backend.database import get_db_session
         from backend.models import User
@@ -1284,7 +1443,7 @@ async def admin_toggle_user_app_key_user(
 
             enabled = toggle_app_key(key_id=key_id, user_id=user_id)
             if enabled is None:
-                raise HTTPException(status_code=404, detail="APP Key 不存在")
+                raise HTTPException(status_code=404, detail="API Key 不存在")
 
             OperationLogger.log(
                 admin_username,
@@ -1300,7 +1459,7 @@ async def admin_toggle_user_app_key_user(
                 {
                     "success": True,
                     "enabled": enabled,
-                    "message": f"APP Key 已{'启用' if enabled else '禁用'}",
+                    "message": f"API Key 已{'启用' if enabled else '禁用'}",
                 }
             )
         finally:
@@ -1308,7 +1467,7 @@ async def admin_toggle_user_app_key_user(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"切换 APP Key 状态失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"切换 API Key 状态失败: {str(e)}")
 
 
 @router.get("/roles")
@@ -3567,9 +3726,10 @@ def _resolve_api_git_source(
     git_password: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    API 构建：Bearer Token / App Key 已定位用户，据此解析数据源与 Git 凭据。
-    - 未传 source_id 时，按「当前用户 + 团队 + git_url」匹配个人数据源
-    - 首次传入凭据时写入个人数据源，后续仅需 git_url
+    API 构建：Bearer Token / API Key 已定位用户，据此解析数据源与 Git 凭据。
+    - 未传 source_id 时，优先按「当前用户 + 团队 + git_url」匹配个人数据源
+    - 精确数据源无凭据时，自动复用同账号下最长 Git 组织路径前缀的凭据
+    - 首次传入或复用凭据时写入目标仓库的个人数据源，后续仅需 git_url
     返回 (source_id, temp_username, temp_password)。
     """
     from backend.git_source_manager import GitSourceManager
@@ -3591,28 +3751,50 @@ def _resolve_api_git_source(
         return source_id, None, None
 
     personal = manager.get_personal_source_by_url(team_id, user_id, git_url)
-    if personal:
+    if personal and (git_username or git_password):
         sid = personal["source_id"]
         require_resource_permission(db, user_id, "git_source", sid, "run")
-        if git_username or git_password:
-            manager.update_source(
-                source_id=sid,
-                username=git_username if git_username is not None else None,
-                password=git_password if git_password is not None else None,
-            )
+        manager.update_source(
+            source_id=sid,
+            username=git_username if git_username is not None else None,
+            password=git_password if git_password is not None else None,
+        )
         return sid, None, None
 
+    if personal and manager.get_auth_config(personal["source_id"]):
+        require_resource_permission(
+            db, user_id, "git_source", personal["source_id"], "run"
+        )
+        return personal["source_id"], None, None
+
     if git_username or git_password:
-        sid, created = manager.upsert_personal_credentials(
+        sid, _ = manager.upsert_personal_credentials(
             team_id=team_id,
             created_by=user_id,
             git_url=git_url,
             username=git_username,
             password=git_password,
         )
-        if created:
-            grant_creator_admin(db, "git_source", sid, user_id)
+        grant_creator_admin(db, "git_source", sid, user_id)
         return sid, None, None
+
+    reused_auth = manager.get_personal_credentials_by_prefix(user_id, git_url)
+    if reused_auth:
+        sid, _ = manager.upsert_personal_credentials(
+            team_id=team_id,
+            created_by=user_id,
+            git_url=git_url,
+            username=reused_auth.get("username"),
+            password=reused_auth.get("password"),
+        )
+        grant_creator_admin(db, "git_source", sid, user_id)
+        return sid, None, None
+
+    if personal:
+        require_resource_permission(
+            db, user_id, "git_source", personal["source_id"], "run"
+        )
+        return personal["source_id"], None, None
 
     return None, None, None
 
@@ -3853,6 +4035,72 @@ class BuildWithConfigRequest(BaseModel):
     tag: Optional[str] = None
     push: Optional[bool] = None
     team_id: Optional[str] = None
+    pipeline_name: Optional[str] = None
+    pipeline_description: Optional[str] = None
+    trigger_source: Optional[str] = None
+
+
+def _create_cli_pipeline(
+    *,
+    name: str,
+    description: str,
+    git_url: str,
+    branch: Optional[str],
+    profile: Optional[str],
+    team_id: str,
+    user_id: str,
+    project_type: Optional[str] = None,
+    template: Optional[str] = None,
+    image_name: Optional[str] = None,
+    tag: Optional[str] = None,
+    push: Optional[bool] = None,
+    source_id: Optional[str] = None,
+) -> tuple:
+    """Create the optional pipeline before a CLI build so the task is linked from birth."""
+    from backend.pipeline_manager import PipelineManager
+    from backend.resource_permissions import grant_creator_admin
+    from backend.database import get_db_session
+
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="流水线名称不能为空")
+
+    manager = PipelineManager()
+    if manager.pipeline_name_exists(clean_name, team_id):
+        raise HTTPException(status_code=409, detail="同团队已存在同名流水线")
+
+    pipeline_id = manager.create_pipeline(
+        name=clean_name,
+        description=(description or "").strip(),
+        git_url=git_url,
+        branch=branch,
+        profile=profile,
+        project_type=project_type or "jar",
+        template=template,
+        image_name=image_name,
+        tag=tag or "latest",
+        push=bool(push),
+        source_id=source_id,
+        use_project_dockerfile=True,
+        team_id=team_id,
+        created_by=user_id,
+    )
+    db = get_db_session()
+    try:
+        grant_creator_admin(db, "pipeline", pipeline_id, user_id)
+    finally:
+        db.close()
+    return manager, pipeline_id
+
+
+def _record_cli_pipeline_trigger(manager, pipeline_id: str, task_id: str, source_mode: str):
+    if manager and pipeline_id:
+        manager.record_trigger(
+            pipeline_id,
+            task_id,
+            trigger_source="cli",
+            trigger_info={"source_mode": source_mode},
+        )
 
 
 @router.post("/build-with-config")
@@ -3930,25 +4178,54 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
         if body.push is not None:
             config_overrides["push"] = body.push
 
+        pipeline_manager = None
+        pipeline_id = None
+        if body.pipeline_name:
+            pipeline_manager, pipeline_id = _create_cli_pipeline(
+                name=body.pipeline_name,
+                description=body.pipeline_description or "",
+                git_url=body.git_url,
+                branch=branch,
+                profile=body.profile,
+                team_id=scoped_team_id,
+                user_id=user_id,
+                project_type=body.project_type,
+                template=body.template,
+                image_name=body.image_name,
+                tag=body.tag,
+                push=body.push,
+                source_id=resolved_source_id,
+            )
+
         manager = BuildManager()
-        task_id = manager.start_build_from_source(
-            git_url=body.git_url,
-            image_name=body.image_name or "myapp/demo",
-            tag=body.tag or "latest",
-            should_push=body.push if body.push is not None else False,
-            selected_template=body.template or "",
-            project_type=body.project_type or "jar",
-            branch=branch,
-            source_id=resolved_source_id,
-            temp_git_username=resolved_temp_user,
-            temp_git_password=resolved_temp_pass,
-            profile=body.profile,
-            tag_name=tag_name,
-            config_overrides=config_overrides,
-            config_only_overrides=True,
-            trigger_source="api",
-            team_id=scoped_team_id,
-            created_by=user_id,
+        try:
+            task_id = manager.start_build_from_source(
+                git_url=body.git_url,
+                image_name=body.image_name or "myapp/demo",
+                tag=body.tag or "latest",
+                should_push=body.push if body.push is not None else False,
+                selected_template=body.template or "",
+                project_type=body.project_type or "jar",
+                branch=branch,
+                source_id=resolved_source_id,
+                temp_git_username=resolved_temp_user,
+                temp_git_password=resolved_temp_pass,
+                profile=body.profile,
+                tag_name=tag_name,
+                config_overrides=config_overrides,
+                config_only_overrides=True,
+                trigger_source="cli" if body.trigger_source == "cli" else "api",
+                pipeline_id=pipeline_id,
+                team_id=scoped_team_id,
+                created_by=user_id,
+            )
+        except Exception:
+            if pipeline_manager and pipeline_id:
+                pipeline_manager.delete_pipeline(pipeline_id)
+            raise
+
+        _record_cli_pipeline_trigger(
+            pipeline_manager, pipeline_id, task_id, source_mode="git"
         )
 
         try:
@@ -3961,6 +4238,7 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
                     "branch": branch,
                     "tag_name": tag_name,
                     "profile": resolved_profile,
+                    "pipeline_id": pipeline_id,
                 },
                 team_id=scoped_team_id,
             )
@@ -3974,6 +4252,8 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
                 "tag_name": tag_name,
                 "profile": resolved_profile,
                 "config_source": config_source,
+                "team_id": scoped_team_id,
+                "pipeline_id": pipeline_id,
                 "message": "构建任务已启动",
             }
         )
@@ -3984,6 +4264,167 @@ async def build_with_config(http_request: Request, body: BuildWithConfigRequest)
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"构建失败: {str(e)}")
+
+
+@router.post("/build-from-local")
+async def build_from_local(
+    http_request: Request,
+    project_archive: UploadFile = File(...),
+    git_url: str = Form(""),
+    branch: Optional[str] = Form(None),
+    commit: Optional[str] = Form(None),
+    profile: Optional[str] = Form(None),
+    project_type: Optional[str] = Form(None),
+    template: Optional[str] = Form(None),
+    image_name: Optional[str] = Form(None),
+    tag: Optional[str] = Form(None),
+    push: Optional[bool] = Form(None),
+    team_id: Optional[str] = Form(None),
+    pipeline_name: Optional[str] = Form(None),
+    pipeline_description: Optional[str] = Form(None),
+):
+    """上传本地 Git 工作区快照，并复用现有 app2docker 源码构建流程。"""
+    import uuid
+    import zipfile
+
+    username = require_auth(http_request)
+    archive_id = str(uuid.uuid4())
+    archive_path = get_source_archive_path(archive_id)
+    pipeline_manager = None
+    pipeline_id = None
+
+    from backend.database import get_db_session
+
+    db = get_db_session()
+    try:
+        scoped_team_id = resolve_team_scope_from_request_with_fallback(
+            db, username, team_id
+        )
+        user_id = get_user_id_by_username(db, username)
+        resolved_source_id = None
+        if git_url:
+            resolved_source_id, _, _ = _resolve_api_git_source(
+                db, user_id, scoped_team_id, git_url
+            )
+    finally:
+        db.close()
+
+    if pipeline_name and not git_url.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="保存流水线时必须提供可供后续构建使用的 Git 地址",
+        )
+
+    try:
+        os.makedirs(PENDING_SOURCE_DIR, exist_ok=True)
+        max_bytes = int(
+            os.environ.get("APP2DOCKER_SOURCE_ARCHIVE_MAX_BYTES", 512 * 1024 * 1024)
+        )
+        uploaded = 0
+        with open(archive_path, "wb") as target:
+            while True:
+                chunk = await project_archive.read(1024 * 1024)
+                if not chunk:
+                    break
+                uploaded += len(chunk)
+                if uploaded > max_bytes:
+                    raise HTTPException(status_code=413, detail="本地源码包过大")
+                target.write(chunk)
+        await project_archive.close()
+
+        if not zipfile.is_zipfile(archive_path):
+            raise HTTPException(status_code=400, detail="本地源码包必须是有效的 ZIP 文件")
+
+        if pipeline_name:
+            pipeline_manager, pipeline_id = _create_cli_pipeline(
+                name=pipeline_name,
+                description=pipeline_description or "",
+                git_url=git_url,
+                branch=branch,
+                profile=profile,
+                team_id=scoped_team_id,
+                user_id=user_id,
+                project_type=project_type,
+                template=template,
+                image_name=image_name,
+                tag=tag,
+                push=push,
+                source_id=resolved_source_id,
+            )
+
+        config_overrides = {}
+        for key, value in (
+            ("project_type", project_type),
+            ("template", template),
+            ("image_name", image_name),
+            ("tag", tag),
+        ):
+            if value:
+                config_overrides[key] = value
+        if push is not None:
+            config_overrides["push"] = push
+
+        task_id = BuildManager().start_build_from_source(
+            git_url=git_url or "local://workspace",
+            image_name=image_name or "myapp/demo",
+            tag=tag or "latest",
+            should_push=push if push is not None else False,
+            selected_template=template or "",
+            project_type=project_type or "jar",
+            branch=branch,
+            source_id=resolved_source_id,
+            profile=profile,
+            config_overrides=config_overrides,
+            config_only_overrides=True,
+            source_mode="local",
+            source_archive_id=archive_id,
+            source_commit=commit,
+            trigger_source="cli",
+            pipeline_id=pipeline_id,
+            team_id=scoped_team_id,
+            created_by=user_id,
+        )
+        _record_cli_pipeline_trigger(
+            pipeline_manager, pipeline_id, task_id, source_mode="local"
+        )
+
+        try:
+            OperationLogger.log(
+                username,
+                "build_from_local",
+                {
+                    "task_id": task_id,
+                    "branch": branch,
+                    "commit": commit,
+                    "profile": profile,
+                    "pipeline_id": pipeline_id,
+                },
+                team_id=scoped_team_id,
+            )
+        except Exception as log_error:
+            print(f"⚠️ 记录操作日志失败: {log_error}")
+
+        return JSONResponse(
+            {
+                "task_id": task_id,
+                "branch": branch,
+                "commit": commit,
+                "profile": profile,
+                "team_id": scoped_team_id,
+                "pipeline_id": pipeline_id,
+                "message": "本地源码构建任务已启动",
+            }
+        )
+    except HTTPException:
+        cleanup_source_archive(archive_id)
+        if pipeline_manager and pipeline_id:
+            pipeline_manager.delete_pipeline(pipeline_id)
+        raise
+    except Exception as exc:
+        cleanup_source_archive(archive_id)
+        if pipeline_manager and pipeline_id:
+            pipeline_manager.delete_pipeline(pipeline_id)
+        raise HTTPException(status_code=500, detail=f"本地源码构建失败: {exc}")
 
 
 @router.get("/build-tasks")
@@ -7698,6 +8139,7 @@ class CreatePipelineRequest(BaseModel):
     name: str
     git_url: Optional[str] = None  # 如果提供了 source_id，git_url 可以从数据源获取
     branch: Optional[str] = None
+    profile: Optional[str] = None
     project_type: str = "jar"
     template: Optional[str] = None
     image_name: Optional[str] = None
@@ -7739,12 +8181,14 @@ class RunPipelineRequest(BaseModel):
     branch: Optional[str] = None  # 指定构建分支（如果提供则覆盖流水线配置）
     ref_type: Optional[str] = None  # branch / tag
     ref_name: Optional[str] = None  # 指定构建的分支或标签名称
+    trigger_source: Optional[str] = None
 
 
 class UpdatePipelineRequest(BaseModel):
     name: Optional[str] = None
     git_url: Optional[str] = None
     branch: Optional[str] = None
+    profile: Optional[str] = None
     project_type: Optional[str] = None
     template: Optional[str] = None
     image_name: Optional[str] = None
@@ -7840,6 +8284,7 @@ async def create_pipeline(request: CreatePipelineRequest, http_request: Request)
             name=request.name,
             git_url=git_url,
             branch=branch,
+            profile=request.profile,
             project_type=request.project_type,
             template=request.template,
             image_name=request.image_name,
@@ -7957,6 +8402,7 @@ async def create_pipeline_from_json(pipeline_data: dict, http_request: Request):
             name=pipeline_data["name"],
             git_url=git_url,
             branch=branch,
+            profile=pipeline_data.get("profile"),
             project_type=pipeline_data.get("project_type", "jar"),
             template=pipeline_data.get("template"),
             image_name=pipeline_data.get("image_name"),
@@ -7983,6 +8429,7 @@ async def create_pipeline_from_json(pipeline_data: dict, http_request: Request):
             service_template_params=pipeline_data.get("service_template_params"),
             push_mode=pipeline_data.get("push_mode", "multi"),
             resource_package_configs=pipeline_data.get("resource_package_configs"),
+            post_build_webhooks=pipeline_data.get("post_build_webhooks"),
             team_id=pipeline_data.get("team_id"),
             created_by=user_id,
         )
@@ -8406,6 +8853,7 @@ async def update_pipeline(
             name=request.name,
             git_url=request.git_url,
             branch=request.branch,
+            profile=request.profile,
             project_type=request.project_type,
             template=request.template,
             image_name=request.image_name,
@@ -8572,6 +9020,9 @@ async def run_pipeline(
         finally:
             db.close()
         manager = PipelineManager()
+        trigger_source = (
+            "cli" if request and request.trigger_source == "cli" else "manual"
+        )
 
         # 获取流水线配置
         pipeline = manager.get_pipeline(pipeline_id)
@@ -8614,7 +9065,7 @@ async def run_pipeline(
         final_ref_name = final_ref_name or final_branch
 
         # 调试日志 - 详细输出
-        print(f"🔍 手动触发流水线 {pipeline_id}:")
+        print(f"🔍 {trigger_source} 触发流水线 {pipeline_id}:")
         print(f"   - 请求对象类型: {type(request)}")
         print(f"   - 请求对象: {request}")
         if request:
@@ -8673,7 +9124,7 @@ async def run_pipeline(
             for tag in tags:
                 task_config = pipeline_to_task_config(
                     pipeline,
-                    trigger_source="manual",
+                    trigger_source=trigger_source,
                     branch=final_branch,
                     tag=tag,
                     branch_tag_mapping=branch_tag_mapping,
@@ -8698,7 +9149,7 @@ async def run_pipeline(
                     "branch": final_branch,
                     "ref_type": final_ref_type,
                     "ref_name": final_ref_name,
-                    "trigger_source": "manual",
+                    "trigger_source": trigger_source,
                     "reason": "debounce",
                 },
             )
@@ -8770,7 +9221,7 @@ async def run_pipeline(
             print(f"   - tag 参数: {tag}")
             task_config = pipeline_to_task_config(
                 pipeline,
-                trigger_source="manual",
+                trigger_source=trigger_source,
                 branch=final_branch,
                 tag=tag,
                 branch_tag_mapping=branch_tag_mapping,
@@ -8814,7 +9265,7 @@ async def run_pipeline(
             manager.record_trigger(
                 pipeline_id,
                 first_task_id,
-                trigger_source="manual",
+                trigger_source=trigger_source,
                 trigger_info={
                     "username": username,
                     "branch": final_branch,
@@ -8835,7 +9286,7 @@ async def run_pipeline(
                     "branch": final_branch,
                     "ref_type": final_ref_type,
                     "ref_name": final_ref_name,
-                    "trigger_source": "manual",
+                    "trigger_source": trigger_source,
                 },
             )
 
@@ -11527,6 +11978,7 @@ class DeployTaskCreateRequest(BaseModel):
 
 class DeployTaskExecuteRequest(BaseModel):
     target_names: Optional[List[str]] = None
+    trigger_source: Optional[str] = None
 
 
 @router.post("/agent-hosts/test-portainer")
@@ -12838,11 +13290,15 @@ async def execute_deploy_task(
         if execute_req and execute_req.target_names:
             target_names = execute_req.target_names
 
-        # 执行部署配置（后台执行，来源为手动）
+        trigger_source = (
+            "cli"
+            if execute_req and execute_req.trigger_source == "cli"
+            else "manual"
+        )
         result_task_id = build_manager.execute_deploy_task(
             config_id,
             target_names=target_names,
-            trigger_source="manual",
+            trigger_source=trigger_source,
             created_by=user_id,
         )
 
@@ -12850,7 +13306,12 @@ async def execute_deploy_task(
         OperationLogger.log(
             username,
             "deploy_task_execute",
-            {"config_id": config_id, "task_id": result_task_id, "target_names": target_names},
+            {
+                "config_id": config_id,
+                "task_id": result_task_id,
+                "target_names": target_names,
+                "trigger_source": trigger_source,
+            },
         )
 
         return JSONResponse(
