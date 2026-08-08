@@ -85,6 +85,8 @@ docker run -d \
 
 详细配置见 [流水线使用指南](docs/pipeline-guide.md)。
 
+需要从终端、CI 或 AI 编码助手触发构建时，参见 [CLI 与 AI 集成指南](docs/cli-guide.md)。
+
 ### 镜像导出与仓库
 
 - 单镜像 / Docker Compose 批量导出，支持 Gzip
@@ -209,6 +211,7 @@ flowchart LR
 ## 相关文档
 
 - [流水线功能使用指南](docs/pipeline-guide.md)
+- [CLI 与 AI 集成指南](docs/cli-guide.md)
 - [Portainer API 说明](docs/portainer-api.md)
 
 ## 开源协议

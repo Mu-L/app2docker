@@ -76,6 +76,7 @@ def migrate_pipelines(db):
                 enabled=pipeline_data.get("enabled", True),
                 git_url=pipeline_data.get("git_url", ""),
                 branch=pipeline_data.get("branch"),
+                profile=pipeline_data.get("profile"),
                 sub_path=pipeline_data.get("sub_path"),
                 project_type=pipeline_data.get("project_type", "jar"),
                 template=pipeline_data.get("template"),

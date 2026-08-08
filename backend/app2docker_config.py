@@ -103,21 +103,47 @@ def config_to_build_params(config: dict, context: dict) -> dict:
     image_tag = resolve_variables(image_cfg.get("tag") or "latest", context)
     full_image = _build_full_image_name(image_cfg)
 
+    selected_services = _extract_services(config)
     return {
         "project_type": build_cfg.get("project_type") or "jar",
         "template": build_cfg.get("template") or "",
         "dockerfile_name": build_cfg.get("dockerfile_name") or "Dockerfile",
         "use_project_dockerfile": build_cfg.get("use_project_dockerfile", True),
         "sub_path": build_cfg.get("sub_path"),
+        "build_args": _extract_build_args(build_cfg, context),
         "image_name": full_image or "myapp/demo",
         "tag": image_tag,
         "should_push": bool(image_cfg.get("push", False)),
         "template_params": config.get("template_params") or {},
         "branch": git_cfg.get("branch"),
-        "selected_services": _extract_services(config),
+        "selected_services": selected_services,
         "service_push_config": _extract_service_push_config(config, context),
+        "service_template_params": config.get("service_template_params") or {},
+        "push_mode": (
+            config.get("push_mode")
+            or ("multi" if selected_services and len(selected_services) > 1 else "single")
+        ),
         "resource_package_ids": _extract_resource_package_configs(config),
     }
+
+
+def _extract_build_args(build_cfg: dict, context: dict) -> dict:
+    """提取 Docker 构建参数，并解析 profile/分支等变量。"""
+    raw = build_cfg.get("build_args") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("build.build_args 必须是对象")
+
+    result = {}
+    for key, value in raw.items():
+        if key is None or value is None:
+            continue
+        resolved = resolve_variables(value, context)
+        if isinstance(resolved, bool):
+            resolved = "true" if resolved else "false"
+        elif not isinstance(resolved, str):
+            resolved = str(resolved)
+        result[str(key)] = resolved
+    return result
 
 
 def _extract_resource_package_configs(config: dict) -> Optional[list]:
@@ -216,6 +242,7 @@ def merge_with_overrides(config_params: dict, overrides: dict) -> dict:
         "should_push": "should_push",
         "branch": "branch",
         "template_params": "template_params",
+        "build_args": "build_args",
     }
 
     for src, dst in field_map.items():
@@ -274,7 +301,7 @@ def _clone_shallow(
         )
 
     cmd.extend([clone_url, target_dir])
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     return result.returncode == 0
 
 
@@ -300,5 +327,78 @@ def peek_profile_config(
 
         with open(config_path, "r", encoding="utf-8") as f:
             return parse_config(f.read()), os.path.basename(config_path)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def inspect_repository_config(
+    git_url: str,
+    profile: Optional[str] = None,
+    branch: Optional[str] = None,
+    tag_name: Optional[str] = None,
+    git_config: Optional[dict] = None,
+) -> dict:
+    """克隆指定 Git 引用并返回可用于流水线的仓库配置快照。"""
+    requested_profile = resolve_profile(profile, branch=branch, tag_name=tag_name)
+    checkout_ref = tag_name or branch
+    temp_root = tempfile.mkdtemp(prefix="app2docker_inspect_")
+    try:
+        clone_dir = os.path.join(temp_root, "repo")
+        if not _clone_shallow(git_url, clone_dir, checkout_ref, git_config):
+            raise RuntimeError("Git 仓库克隆失败，无法检测 .app2docker 配置")
+
+        commit_hash = ""
+        result = subprocess.run(
+            ["git", "-C", clone_dir, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            commit_hash = result.stdout.strip()
+
+        config_path, used_profile = find_config_file(clone_dir, requested_profile)
+        if not config_path:
+            return {
+                "found": False,
+                "requested_profile": requested_profile,
+                "used_profile": None,
+                "config_source": None,
+                "commit": commit_hash,
+                "build_params": {},
+                "warnings": [
+                    f"未找到 {config_filename_for_profile(requested_profile)}"
+                    + (
+                        " 或 .app2docker.yaml"
+                        if requested_profile != "default"
+                        else ""
+                    )
+                ],
+            }
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = parse_config(f.read())
+
+        context = {
+            "branch": branch or "",
+            "profile": used_profile,
+            "commit": commit_hash,
+        }
+        params = config_to_build_params(config, context)
+        warnings = []
+        if params.get("resource_package_ids"):
+            warnings.append(
+                "仓库配置中的资源包不会自动导入流水线；请在平台中按团队权限配置"
+            )
+
+        return {
+            "found": True,
+            "requested_profile": requested_profile,
+            "used_profile": used_profile,
+            "config_source": os.path.basename(config_path),
+            "commit": commit_hash,
+            "build_params": params,
+            "warnings": warnings,
+        }
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

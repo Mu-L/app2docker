@@ -30,7 +30,6 @@ APP_CLEANUP_DIRS = [
     "data/docker_build",
     "data/uploads",
     "data/exports",
-    "data/resource_packages",
 ]
 APP_CLEANUP_LOG_DIR = "data/logs"
 APP_CLEANUP_SKIP_FILES = {

@@ -3,7 +3,7 @@
     <div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
       <AppIcon  name="circle-info" class="mr-1" />
       接口认证支持 <code class="rounded bg-white/80 px-1">Authorization: Bearer &lt;token&gt;</code> 或
-      <code class="rounded bg-white/80 px-1">X-API-Key: &lt;appkey&gt;</code>
+      <code class="rounded bg-white/80 px-1">X-API-Key: &lt;api-key&gt;</code>
     </div>
 
     <div class="flex gap-1 border-b border-slate-200">

@@ -155,6 +155,7 @@ const formData = ref({
   description:"",
   git_url:"",
   branch:"",
+  profile:"",
   sub_path:"",
   project_type:"jar",
   template:"",
@@ -516,6 +517,8 @@ function applyBuildConfigJson() {
     if (config.tag !== undefined) formData.value.tag = config.tag;
     if (config.branch !== undefined && config.branch !== null)
       formData.value.branch = config.branch;
+    if (config.profile !== undefined)
+      formData.value.profile = config.profile ||"";
     if (config.project_type !== undefined)
       formData.value.project_type = config.project_type;
     if (config.template !== undefined)
@@ -726,6 +729,7 @@ function initCreateForm() {
     description:"",
     git_url:"",
     branch:"",
+    profile:"",
     sub_path:"",
     project_type:"jar",
     template:"",
@@ -834,6 +838,7 @@ function applyPipelineToForm(pipeline, options = {}) {
     description: pipeline.description ||"",
     git_url: pipeline.git_url,
     branch: pipeline.branch ||"",
+    profile: pipeline.profile ||"",
     sub_path: pipeline.sub_path ||"",
     project_type: pipeline.project_type ||"jar",
     template: savedTemplate,
@@ -1429,6 +1434,7 @@ async function createPipelineMinimal() {
       description: formData.value.description ||"",
       git_url: formData.value.git_url?.trim() || null,
       branch: formData.value.branch || null,
+      profile: formData.value.profile || null,
       source_id: formData.value.source_id || null,
       project_type: formData.value.project_type ||"jar",
       sub_path: formData.value.sub_path || null,
@@ -2739,6 +2745,7 @@ const buildConfigJson = computed(() => {
     image_name: formData.value.image_name ||"",
     tag: formData.value.tag ||"latest",
     branch: formData.value.branch || null,
+    profile: formData.value.profile || null,
     project_type: formData.value.project_type ||"jar",
     template: formData.value.template ||"",
     template_params: formData.value.template_params || {},

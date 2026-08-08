@@ -1,0 +1,4 @@
+interface:
+  display_name: "App2Docker Build"
+  short_description: "Trigger app2docker builds, pipelines, and deployments"
+  default_prompt: "Use $app2docker-build to trigger and follow the requested app2docker build, pipeline, or deployment."

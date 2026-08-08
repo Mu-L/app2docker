@@ -177,6 +177,20 @@
                         </div>
                         <div class="pipeline-field">
                           <label class="block text-sm font-medium text-slate-700"
+                            >app2docker 配置环境</label
+                          >
+                          <input
+                            v-model="formData.profile"
+                            type="text"
+                            class="flex h-9 w-full rounded-md border border-slate-200 px-3 py-1 text-sm"
+                            placeholder="例如 prod；留空按分支或 Tag 自动选择"
+                          />
+                          <small class="text-slate-500">
+                            对应仓库中的 .app2docker.&lt;profile&gt;.yaml。
+                          </small>
+                        </div>
+                        <div class="pipeline-field">
+                          <label class="block text-sm font-medium text-slate-700"
                             >项目类型 <span class="text-red-500">*</span></label
                           >
                           <select

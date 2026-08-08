@@ -3,6 +3,7 @@
 import base64
 import uuid
 import threading
+from urllib.parse import urlsplit
 from datetime import datetime
 from typing import Optional, Dict, List
 from backend.database import get_db_session, init_db
@@ -14,6 +15,28 @@ try:
     init_db()
 except:
     pass
+
+
+def _git_location(value: str):
+    """返回可比较的 (传输类型, 主机, 路径段)。"""
+    raw = (value or "").strip()
+    if "://" not in raw and ":" in raw:
+        owner, path = raw.split(":", 1)
+        transport, host = "ssh", owner.rsplit("@", 1)[-1].lower()
+    else:
+        parsed = urlsplit(raw)
+        transport = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()
+        try:
+            if parsed.port:
+                host += f":{parsed.port}"
+        except ValueError:
+            return "", "", ()
+        path = parsed.path
+    parts = [part for part in path.strip("/").split("/") if part]
+    if parts and parts[-1].lower().endswith(".git"):
+        parts[-1] = parts[-1][:-4]
+    return transport, host, tuple(parts)
 
 
 class GitSourceManager:
@@ -349,6 +372,55 @@ class GitSourceManager:
             return self._to_dict(source, db=db)
         finally:
             db.close()
+
+    def get_personal_credentials_by_prefix(
+        self, created_by: str, git_url: str
+    ) -> Optional[Dict[str, str]]:
+        """复用同账号下最长 Git 组织路径前缀对应的凭证。"""
+        target_transport, target_host, target_parts = _git_location(git_url)
+        if not target_host:
+            return None
+
+        db = get_db_session()
+        try:
+            # ponytail: scan one account's personal sources; add a normalized
+            # prefix column/index only if per-account source counts become large.
+            rows = (
+                db.query(GitSource)
+                .filter(
+                    GitSource.created_by == created_by,
+                    GitSource.scope == "personal",
+                )
+                .all()
+            )
+            matches = []
+            for source in rows:
+                if not (source.username or source.password):
+                    continue
+                transport, host, parts = _git_location(source.git_url)
+                prefix = parts[:-1]
+                if (
+                    prefix
+                    and transport == target_transport
+                    and host == target_host
+                    and len(target_parts) > len(prefix)
+                    and target_parts[: len(prefix)] == prefix
+                ):
+                    matches.append(
+                        (
+                            len(prefix),
+                            source.updated_at or source.created_at or datetime.min,
+                            source.source_id,
+                        )
+                    )
+            if not matches:
+                return None
+            source_id = max(matches, key=lambda item: (item[0], item[1]))[2]
+        finally:
+            db.close()
+
+        auth = self.get_auth_config(source_id)
+        return auth or None
 
     def get_source_by_scope_url(
         self,

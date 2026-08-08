@@ -5,6 +5,7 @@ docker==7.1.0
 fastapi==0.115.6
 idna==3.11
 paramiko==3.4.0
+cryptography>=41.0.0
 psutil==6.1.0  # 系统信息获取（Agent 需要）
 PyJWT==2.10.1
 python-multipart==0.0.20

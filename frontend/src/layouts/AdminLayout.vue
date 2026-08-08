@@ -209,7 +209,7 @@
                     class="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                     @click="openUserCenter('appkeys')"
                   >
-                    <AppIcon  name="key" class="w-4 text-slate-400" />APPKEY管理
+                    <AppIcon  name="key" class="w-4 text-slate-400" />API Key 管理
                   </button>
                 </li>
                 <li>
