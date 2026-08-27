@@ -387,7 +387,8 @@ class DockerBuilder(ABC):
                 cmd.extend(["--output", output])
         elif push:
             # 如果指定了 push，使用 registry 输出
-            cmd.append("--push")
+            # 阿里云容器镜像服务不接受 Buildx 默认生成的 OCI attestation 空清单。
+            cmd.extend(["--push", "--provenance=false", "--sbom=false"])
         elif load:
             # 如果指定了 load，且没有多平台构建，则加载到本地
             # 注意：多平台构建不能使用 --load，必须使用 --push 或 --output
