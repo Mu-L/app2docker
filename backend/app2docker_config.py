@@ -111,6 +111,7 @@ def config_to_build_params(config: dict, context: dict) -> dict:
         "use_project_dockerfile": build_cfg.get("use_project_dockerfile", True),
         "sub_path": build_cfg.get("sub_path"),
         "build_args": _extract_build_args(build_cfg, context),
+        "platforms": _extract_platforms(build_cfg),
         "image_name": full_image or "myapp/demo",
         "tag": image_tag,
         "should_push": bool(image_cfg.get("push", False)),
@@ -143,6 +144,21 @@ def _extract_build_args(build_cfg: dict, context: dict) -> dict:
         elif not isinstance(resolved, str):
             resolved = str(resolved)
         result[str(key)] = resolved
+    return result
+
+
+def _extract_platforms(build_cfg: dict) -> list[str]:
+    """提取并校验 Docker 目标平台。"""
+    raw = build_cfg.get("platforms") or []
+    if isinstance(raw, str):
+        raw = [item.strip() for item in raw.split(",")]
+    if not isinstance(raw, list):
+        raise ValueError("build.platforms 必须是数组或逗号分隔字符串")
+    result = []
+    for item in raw:
+        value = str(item or "").strip()
+        if value and value not in result:
+            result.append(value)
     return result
 
 

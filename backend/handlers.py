@@ -2873,6 +2873,7 @@ class BuildManager:
         """从 Git 源码构建任务"""
         config_overrides = config_overrides or {}
         build_args = {}
+        platforms = []
         # 兼容场景：页面选择多阶段模式但仅选了一个服务时，实际会走单服务构建分支。
         # 此时应优先使用该服务在 service_push_config 中的镜像名/标签，避免出现
         # push 到 registry/namespace（缺少镜像名）导致本地 tag 不存在。
@@ -3210,6 +3211,8 @@ class BuildManager:
                     sub_path = merged["sub_path"]
                 if "build_args" in merged:
                     build_args = merged["build_args"] or {}
+                if "platforms" in merged:
+                    platforms = merged["platforms"] or []
                 if "selected_services" in merged:
                     selected_services = merged["selected_services"] or []
                 if "service_push_config" in merged:
@@ -3231,6 +3234,7 @@ class BuildManager:
                     "use_project_dockerfile": use_project_dockerfile,
                     "dockerfile_name": dockerfile_name,
                     "build_args": build_args,
+                    "platforms": platforms,
                     "selected_services": selected_services or [],
                     "service_push_config": service_push_config or {},
                     "service_template_params": service_template_params or {},
@@ -3481,6 +3485,11 @@ logs/
                     log(f"🔨 单一推送模式：所有服务将构建到一个镜像中\n")
                     log(f"📦 镜像标签: {full_tag}\n")
                     log(f"📂 构建上下文: {build_context}\n")
+                    multiarch_push = bool(
+                        platforms and len(platforms) > 1 and should_push
+                    )
+                    if platforms and len(platforms) > 1 and not should_push:
+                        raise RuntimeError("多架构构建必须同时启用镜像推送")
 
                     # 从 Dockerfile 中解析实际的阶段名称
                     dockerfile_path = os.path.join(build_context, dockerfile_relative)
@@ -3525,6 +3534,11 @@ logs/
                             "dockerfile": dockerfile_relative,
                             "buildargs": build_args,
                         }
+                        if platforms:
+                            build_kwargs["platforms"] = platforms
+                            log(f"🌐 目标平台: {', '.join(platforms)}\n")
+                        if multiarch_push:
+                            build_kwargs["push"] = True
                         # 只有在有明确的 target stage 时才添加 target 参数
                         if target_stage:
                             build_kwargs["target"] = target_stage
@@ -3567,7 +3581,11 @@ logs/
 
                     # 单一推送模式的推送逻辑（使用全局推送配置）
                     if should_push:
-                        log(f"📡 开始推送镜像: {full_tag}\n")
+                        if multiarch_push:
+                            log(f"✅ 多架构镜像已由 Buildx 推送: {full_tag}\n")
+                            service_level_push_completed = True
+                        else:
+                            log(f"📡 开始推送镜像: {full_tag}\n")
                         # 使用单服务构建的推送逻辑
                         # ... (推送逻辑将在后面添加)
                     else:
@@ -3650,6 +3668,18 @@ logs/
                         log(f"📦 镜像标签: {service_tag}\n")
                         log(f"📂 构建上下文: {build_context}\n")
 
+                        if isinstance(service_config, dict):
+                            should_push_service = service_config.get("push", False)
+                        else:
+                            should_push_service = bool(service_config)
+                        multiarch_push = bool(
+                            platforms and len(platforms) > 1 and should_push_service
+                        )
+                        if platforms and len(platforms) > 1 and not should_push_service:
+                            raise RuntimeError(
+                                f"服务 {service_name} 配置了多架构构建，必须同时启用镜像推送"
+                            )
+
                         # 确定要构建的 target stage
                         target_stage = service_to_stage_map.get(service_name)
 
@@ -3660,6 +3690,11 @@ logs/
                                 "dockerfile": dockerfile_relative,
                                 "buildargs": build_args,
                             }
+                            if platforms:
+                                build_kwargs["platforms"] = platforms
+                                log(f"🌐 目标平台: {', '.join(platforms)}\n")
+                            if multiarch_push:
+                                build_kwargs["push"] = True
                             build_kwargs["target"] = target_stage
                             log(f"🚀 构建目标阶段: {target_stage}\n")
 
@@ -3730,14 +3765,11 @@ logs/
                         built_services.append(service_name)
 
                         # 根据推送配置决定是否推送
-                        should_push_service = False
-                        if isinstance(service_config, dict):
-                            should_push_service = service_config.get("push", False)
-                        else:
-                            # 兼容旧格式
-                            should_push_service = bool(service_config)
-
                         if should_push_service:
+                            if multiarch_push:
+                                log(f"✅ 多架构镜像已由 Buildx 推送: {service_tag}\n")
+                                service_level_push_completed = True
+                                continue
                             log(f"📡 开始推送服务镜像: {service_tag}\n")
                             log(f"[{service_name}] 🧭 推送路径: service\n")
                             try:
@@ -4054,12 +4086,23 @@ logs/
 
                 log(f"🐳 准备调用 Docker 构建器...\n")
                 try:
-                    build_stream = docker_builder.build_image(
-                        path=build_context,
-                        tag=full_tag,
-                        dockerfile=dockerfile_relative,
-                        buildargs=build_args,
+                    multiarch_push = bool(
+                        platforms and len(platforms) > 1 and should_push
                     )
+                    if platforms and len(platforms) > 1 and not should_push:
+                        raise RuntimeError("多架构构建必须同时启用镜像推送")
+                    build_kwargs = {
+                        "path": build_context,
+                        "tag": full_tag,
+                        "dockerfile": dockerfile_relative,
+                        "buildargs": build_args,
+                    }
+                    if platforms:
+                        build_kwargs["platforms"] = platforms
+                        log(f"🌐 目标平台: {', '.join(platforms)}\n")
+                    if multiarch_push:
+                        build_kwargs["push"] = True
+                    build_stream = docker_builder.build_image(**build_kwargs)
                     log(f"✅ Docker 构建流已启动\n")
                 except Exception as e:
                     log(f"❌ 启动 Docker 构建失败: {str(e)}\n")
@@ -4104,6 +4147,9 @@ logs/
                 log(f"✅ Docker 构建流处理完成，共 {chunk_count} 个数据块\n")
 
                 log(f"✅ 镜像构建完成: {full_tag}\n")
+                if multiarch_push:
+                    log(f"✅ 多架构镜像已由 Buildx 推送: {full_tag}\n")
+                    service_level_push_completed = True
 
             # 如果需要推送，直接使用构建好的镜像名推送，从激活的registry获取认证信息
             if should_push and not service_level_push_completed:

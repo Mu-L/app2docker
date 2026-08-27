@@ -158,3 +158,15 @@ def test_config_rejects_non_mapping_build_args():
             },
             {"profile": "dev", "branch": "dev"},
         )
+
+
+def test_config_extracts_multiarch_platforms():
+    params = config_to_build_params(
+        {
+            "build": {"platforms": ["linux/amd64", "linux/arm64", "linux/amd64"]},
+            "image": {"name": "web", "push": True},
+        },
+        {"profile": "prod", "branch": "main"},
+    )
+
+    assert params["platforms"] == ["linux/amd64", "linux/arm64"]
