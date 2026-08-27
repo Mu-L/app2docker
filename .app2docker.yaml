@@ -1,0 +1,14 @@
+version: "1.0"
+
+build:
+  project_type: python
+  use_project_dockerfile: true
+  dockerfile_name: Dockerfile
+
+image:
+  name: app2docker
+  prefix: registry.cn-shanghai.aliyuncs.com/51jbm
+  tag: latest
+  push: true
+
+push_mode: single
