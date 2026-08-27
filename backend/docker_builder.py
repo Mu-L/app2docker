@@ -124,6 +124,12 @@ class DockerBuilder(ABC):
             )
             if inspect.returncode == 0:
                 return builder_name
+            subprocess.run(
+                [docker_path, "buildx", "rm", builder_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
             created = subprocess.run(
                 [
                     docker_path,
@@ -133,6 +139,8 @@ class DockerBuilder(ABC):
                     builder_name,
                     "--driver",
                     "docker-container",
+                    "--driver-opt",
+                    "image=m.daocloud.io/docker.io/moby/buildkit:buildx-stable-1",
                     "--bootstrap",
                 ],
                 capture_output=True,
