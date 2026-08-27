@@ -105,6 +105,27 @@ class DockerBuilder(ABC):
         """获取连接信息（用于日志显示）"""
         return "Unknown"
 
+    @staticmethod
+    def _login_registry_cli(auth_config: Dict[str, Any]) -> None:
+        """Persist registry credentials for the Buildx CLI without exposing the password."""
+        username = auth_config.get("username")
+        password = auth_config.get("password")
+        registry = auth_config.get("serveraddress") or "docker.io"
+        if not username or not password:
+            raise RuntimeError("多架构推送缺少镜像仓库用户名或密码")
+        docker_path = shutil.which("docker")
+        if not docker_path:
+            raise RuntimeError("未找到 docker 命令，无法登录镜像仓库")
+        result = subprocess.run(
+            [docker_path, "login", registry, "--username", username, "--password-stdin"],
+            input=password,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"镜像仓库登录失败: {result.stderr.strip()}")
+
     def _ensure_buildx_builder(
         self, docker_path: str, require_container: bool = False
     ) -> str:
@@ -566,17 +587,20 @@ class LocalDockerBuilder(DockerBuilder):
         if not self.available:
             raise RuntimeError("本地 Docker 不可用")
 
-        # 如果有认证信息，先尝试登录
-        if hasattr(self, "auth_config") and self.auth_config:
+        build_auth_config = kwargs.pop("auth_config", None) or self.auth_config
+
+        # Buildx --push reads the Docker CLI credential store, so login must be persisted first.
+        if build_auth_config:
+            self._login_registry_cli(build_auth_config)
             try:
                 # 尝试登录到仓库
                 self.client.login(
-                    username=self.auth_config["username"],
-                    password=self.auth_config["password"],
-                    registry=self.auth_config.get("serveraddress", "docker.io"),
+                    username=build_auth_config["username"],
+                    password=build_auth_config["password"],
+                    registry=build_auth_config.get("serveraddress", "docker.io"),
                 )
                 print(
-                    f"✅ 已登录到仓库: {self.auth_config.get('serveraddress', 'docker.io')}"
+                    f"✅ 已登录到仓库: {build_auth_config.get('serveraddress', 'docker.io')}"
                 )
             except Exception as e:
                 print(f"⚠️ 仓库登录失败: {e}")

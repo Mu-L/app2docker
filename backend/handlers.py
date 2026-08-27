@@ -1625,6 +1625,41 @@ class BuildManager:
                 db.close()
         return reg_team_id, reg_user_id
 
+    def _registry_auth_for_image(
+        self, task_id: str, image_name: str, preferred_registry: str = ""
+    ) -> dict:
+        """Resolve decrypted credentials before a Buildx multi-platform push."""
+        reg_team_id, reg_user_id = self._registry_scope_for_task(task_id)
+        registry_config = None
+        if preferred_registry:
+            registry_config = get_registry_by_name(
+                preferred_registry, team_id=reg_team_id, user_id=reg_user_id
+            )
+        image_host = image_name.split("/", 1)[0] if "/" in image_name else ""
+        if not registry_config and image_host:
+            for item in get_all_registries(team_id=reg_team_id, user_id=reg_user_id):
+                address = str(item.get("registry") or "").rstrip("/")
+                if address == image_host:
+                    registry_config = get_registry_by_name(
+                        item.get("registry_id") or item.get("name"),
+                        team_id=reg_team_id,
+                        user_id=reg_user_id,
+                    )
+                    break
+        if not registry_config:
+            registry_config = get_active_registry(
+                team_id=reg_team_id, user_id=reg_user_id
+            )
+        username = registry_config.get("username") if registry_config else None
+        password = registry_config.get("password") if registry_config else None
+        if not username or not password:
+            raise RuntimeError(f"多架构推送缺少镜像仓库认证: {image_host or image_name}")
+        return {
+            "username": username,
+            "password": password,
+            "serveraddress": registry_config.get("registry") or image_host or "docker.io",
+        }
+
     def _save_upload_staging(
         self, task_id: str, file_data: bytes, original_filename: str
     ) -> str:
@@ -3539,6 +3574,9 @@ logs/
                             log(f"🌐 目标平台: {', '.join(platforms)}\n")
                         if multiarch_push:
                             build_kwargs["push"] = True
+                            build_kwargs["auth_config"] = self._registry_auth_for_image(
+                                task_id, full_tag
+                            )
                         # 只有在有明确的 target stage 时才添加 target 参数
                         if target_stage:
                             build_kwargs["target"] = target_stage
@@ -3695,6 +3733,9 @@ logs/
                                 log(f"🌐 目标平台: {', '.join(platforms)}\n")
                             if multiarch_push:
                                 build_kwargs["push"] = True
+                                build_kwargs["auth_config"] = self._registry_auth_for_image(
+                                    task_id, service_tag, service_registry
+                                )
                             build_kwargs["target"] = target_stage
                             log(f"🚀 构建目标阶段: {target_stage}\n")
 
@@ -4102,6 +4143,9 @@ logs/
                         log(f"🌐 目标平台: {', '.join(platforms)}\n")
                     if multiarch_push:
                         build_kwargs["push"] = True
+                        build_kwargs["auth_config"] = self._registry_auth_for_image(
+                            task_id, full_tag
+                        )
                     build_stream = docker_builder.build_image(**build_kwargs)
                     log(f"✅ Docker 构建流已启动\n")
                 except Exception as e:

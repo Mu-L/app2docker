@@ -25,3 +25,35 @@ def test_multiarch_build_uses_docker_container_builder(monkeypatch):
         "--driver",
     ]
     assert "docker-container" in commands[-1]
+
+
+def test_buildx_registry_login_uses_password_stdin(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr("backend.docker_builder.shutil.which", lambda _name: "docker")
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("backend.docker_builder.subprocess.run", fake_run)
+
+    LocalDockerBuilder._login_registry_cli(
+        {
+            "username": "builder",
+            "password": "secret-value",
+            "serveraddress": "registry.example.com",
+        }
+    )
+
+    command, kwargs = calls[0]
+    assert command == [
+        "docker",
+        "login",
+        "registry.example.com",
+        "--username",
+        "builder",
+        "--password-stdin",
+    ]
+    assert kwargs["input"] == "secret-value"
+    assert "secret-value" not in command
