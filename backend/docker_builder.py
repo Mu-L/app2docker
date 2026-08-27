@@ -105,13 +105,46 @@ class DockerBuilder(ABC):
         """获取连接信息（用于日志显示）"""
         return "Unknown"
 
-    def _ensure_buildx_builder(self, docker_path: str) -> str:
+    def _ensure_buildx_builder(
+        self, docker_path: str, require_container: bool = False
+    ) -> str:
         """
         确保 buildx builder 存在并可用
         参考: https://github.com/docker/build-push-action
         Returns:
             builder 名称
         """
+        if require_container:
+            builder_name = "app2docker-multiarch"
+            inspect = subprocess.run(
+                [docker_path, "buildx", "inspect", builder_name, "--bootstrap"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if inspect.returncode == 0:
+                return builder_name
+            created = subprocess.run(
+                [
+                    docker_path,
+                    "buildx",
+                    "create",
+                    "--name",
+                    builder_name,
+                    "--driver",
+                    "docker-container",
+                    "--bootstrap",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if created.returncode != 0:
+                raise RuntimeError(
+                    f"无法创建多架构 Buildx builder: {created.stderr.strip()}"
+                )
+            return builder_name
+
         # 检查默认 builder 是否存在
         try:
             result = subprocess.run(
@@ -249,7 +282,9 @@ class DockerBuilder(ABC):
             raise RuntimeError(f"docker buildx 不可用: {e}")
 
         # 确保 builder 存在
-        builder_name = self._ensure_buildx_builder(docker_path)
+        builder_name = self._ensure_buildx_builder(
+            docker_path, require_container=bool(platforms and len(platforms) > 1)
+        )
 
         # 构建 buildx 命令
         cmd = [docker_path, "buildx", "build"]
